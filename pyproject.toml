@@ -1,0 +1,22 @@
+[project]
+name = "robodog-client"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.13.1",
+    "google-genai>=1.52.0",
+    "langchain>=1.1.0",
+    "langchain-core>=1.1.0",
+    "langchain-google-genai>=3.2.0",
+    "langchain-mcp-adapters>=0.1.14",
+    "langgraph>=1.0.4",
+]
+
+[project.scripts]
+robodog-client = "robodog_client.main:main"
+
+[build-system]
+requires = ["uv_build>=0.9.13,<0.10.0"]
+build-backend = "uv_build"
