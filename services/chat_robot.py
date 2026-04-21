@@ -7,12 +7,15 @@ import json
 import os
 import base64
 import mimetypes
-import io 
+import io
+import time
+import httpx 
 import docx 
 
 from schemas.request import QuestionRequest
 from fastmcp.client.transports import StreamableHttpTransport
 from utils.tools_converter import convert_mcp_tools_to_gemini
+from utils.prompt import system_prompt
 from dotenv import load_dotenv
 from config.config import Settings
 from fastmcp import Client as FastMCPClient
@@ -52,7 +55,7 @@ class ChatRobot():
             )
 
             resp = self.gemini_client.models.generate_content(
-                model='gemini-2.0-flash-exp',
+                model='gemini-2.5-flash',
                 contents=title_prompt
             )
             
@@ -76,11 +79,12 @@ class ChatRobot():
             return new_id
         return None
 
-    def save_message(self, session_id: str, content: types.Content):
+    def save_message(self, session_id: str, content: types.Content, showed: bool = True):
         """
         Menyimpan pesan ke DB.
         PENTING: Kita serialisasi objek Gemini ke JSON.
         Kita TIDAK menyimpan bytes file di sini.
+        showed: True untuk user msg & final model text, False untuk function_call & function_response.
         """
         serialized_parts = []
         for part in content.parts:
@@ -104,7 +108,8 @@ class ChatRobot():
         self.supabase.table("chat-messages").insert({
             "session_id": session_id,
             "role": content.role,
-            "content": serialized_parts
+            "content": serialized_parts,
+            "showed": showed
         }).execute()
 
     def get_history(self, session_id: str) -> list:
@@ -153,6 +158,17 @@ class ChatRobot():
                     
                     if file_injection_msg:
                         gemini_messages.append(file_injection_msg)
+
+                elif msg_type == "image_capture" and status == "success":
+                    data = tool_response_payload.get("data", {})
+                    filepath = data.get("filepath")
+                    
+                    print(f"   📸 History Replay: Re-downloading captured image '{filepath}' for context...")
+                    
+                    image_injection_msg = self.download_image(filepath)
+                    
+                    if image_injection_msg:
+                        gemini_messages.append(image_injection_msg)
 
         return gemini_messages
 
@@ -212,6 +228,35 @@ class ChatRobot():
             print(f"❌ Error downloading file for history: {e}")
             return None
 
+    def download_image(self, filepath: str) -> types.Content:
+        """
+        Mengunduh gambar hasil capture dari Supabase Storage dan mengembalikannya
+        sebagai Content dengan image bytes untuk di-inject ke Gemini context.
+        """
+        try:
+            # Download bytes dari Supabase Storage
+            file_bytes = self.supabase.storage.from_(self.settings.bucket_name).download(filepath)
+            
+            if not file_bytes:
+                print(f"   ⚠️ Image file empty or not found: {filepath}")
+                return None
+
+            filename = filepath.split("/")[-1]
+
+            parts = [
+                types.Part.from_bytes(data=file_bytes, mime_type="image/jpeg"),
+                types.Part.from_text(text=f"[System Injection] Captured image from robot camera: {filename}")
+            ]
+
+            return types.Content(
+                role='user',
+                parts=parts
+            )
+
+        except Exception as e:
+            print(f"❌ Error downloading captured image: {e}")
+            return None
+
     # --- MAIN PROCESS ---
 
     async def main(self, req: QuestionRequest):
@@ -243,16 +288,35 @@ class ChatRobot():
             gemini_tools = convert_mcp_tools_to_gemini(tools_response)
 
             while True:
-                response = self.gemini_client.models.generate_content(
-                    model='gemini-2.0-flash-exp', 
-                    contents=messages,
-                    config=types.GenerateContentConfig(tools=gemini_tools),
-                )
+                # Retry logic for transient network errors (DNS, connection)
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = self.gemini_client.models.generate_content(
+                            model='gemini-2.5-flash', 
+                            contents=messages,
+                            config=types.GenerateContentConfig(
+                                tools=gemini_tools,
+                                system_instruction=system_prompt
+                            ),
+                        )
+                        break  # Success, exit retry loop
+                    except (httpx.ConnectError, httpx.TimeoutException) as e:
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                            print(f"   ⚠️ Network error (attempt {attempt + 1}/{max_retries}): {e}")
+                            print(f"   🔄 Retrying in {wait_time}s...")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            print(f"   ❌ Network error persisted after {max_retries} attempts")
+                            raise
 
                 candidate = response.candidates[0]
                 messages.append(candidate.content)
                 
-                self.save_message(session_id, candidate.content)
+                # Cek apakah response berisi function_call (tidak ditampilkan di UI)
+                has_function_call = any(part.function_call for part in candidate.content.parts)
+                self.save_message(session_id, candidate.content, showed=not has_function_call)
 
                 found_tool_call = False
                 
@@ -261,7 +325,10 @@ class ChatRobot():
                         if part.function_call:
                             found_tool_call = True
                             tool_name = part.function_call.name
-                            tool_args = part.function_call.args
+                            tool_args = dict(part.function_call.args) if part.function_call.args else {}
+                            
+                            # Inject session_id into every tool call
+                            tool_args["session_id"] = str(session_id)
                             
                             print(f"🔧 Calling tool: {tool_name}({tool_args})")
                             
@@ -288,6 +355,14 @@ class ChatRobot():
                                         
                                         runtime_file_injection = self.download_file(filename, folder)
 
+                                    elif msg_type == "image_capture" and status == "success":
+                                        print("   📸 Image captured. Downloading for current context...")
+                                        
+                                        data = parsed_output.get("data", {})
+                                        filepath = data.get("filepath")
+                                        
+                                        runtime_file_injection = self.download_image(filepath)
+
                             except Exception as e:
                                 print(f"   ❌ Error: {e}")
                                 response_payload = {"error": str(e)}
@@ -300,7 +375,7 @@ class ChatRobot():
                                 )]
                             )
                             messages.append(tool_msg)
-                            self.save_message(session_id, tool_msg) 
+                            self.save_message(session_id, tool_msg, showed=False) 
                             
            
                             if runtime_file_injection:

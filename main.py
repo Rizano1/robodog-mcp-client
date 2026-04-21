@@ -5,21 +5,28 @@ import logging
 import asyncio
 import config.logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware # Import the CORS middleware
 from config.config import Settings
 from routes.chat_robot import chat_router
-from fastapi.responses import JSONResponse
-from fastapi import FastAPI, Request, HTTPException
 
 settings = Settings()
 
 app = FastAPI()
 
+# Configure CORS Middleware to allow requests from the Next.js frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"], # Allow the Next.js origin
+    allow_credentials=True,
+    allow_methods=["*"], # Allow all methods (POST, GET, OPTIONS, etc.)
+    allow_headers=["*"], # Allow all headers
+)
+
 app.include_router(chat_router, prefix="/api/chat_robot", tags=['ChatRobot'])
 
-
 async def start_server():
-
     host = settings.host
     port = settings.port
     log_level = settings.log_level
