@@ -2,21 +2,27 @@ from google.genai.types import Tool, FunctionDeclaration
 
 def clean_schema(schema):
     """
-    Recursively removes 'title' fields from the JSON schema.
+    Recursively removes unsupported fields from the JSON schema for Gemini.
 
     Args:
         schema (dict): The schema dictionary.
 
     Returns:
-        dict: Cleaned schema without 'title' fields.
+        dict: Cleaned schema without 'title' and 'additionalProperties' fields.
     """
     if isinstance(schema, dict):
-        schema.pop("title", None)  # Remove title if present
+        schema.pop("title", None)
+        schema.pop("additionalProperties", None)
+        schema.pop("additional_properties", None)
 
         # Recursively clean nested properties
         if "properties" in schema and isinstance(schema["properties"], dict):
             for key in schema["properties"]:
                 schema["properties"][key] = clean_schema(schema["properties"][key])
+        
+        # Also clean items for arrays
+        if "items" in schema:
+            schema["items"] = clean_schema(schema["items"])
 
     return schema
 
