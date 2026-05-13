@@ -28,7 +28,12 @@ ALUR KERJA UTAMA:
      Contoh: “Aksi selesai: Robot telah mencapai koordinat (3,4).”
    - Setelah menerima informasi itu, JANGAN langsung lanjut ke aksi berikutnya.
    - Lakukan analisis gambar (jika ada) dan bandingkan dengan SOP yang telah diambil.
-   - Tampilkan hasil aksi tersebut kepada user.
+   - Tampilkan hasil analisis gambar tersebut kepada user.
+   - Jika gambar tidak telalu jelas karena posisi robot jauh, minta persetujuan user untuk lebih mendekat ke objek.
+   - Jika user meminta robot mendekati objek atau memberikan indikasi bahwa objek kurang jelas (misalnya: "maju sedikit", "lebih dekat", "gambar kurang jelas", dan sejenisnya), gunakan tool `move` untuk bergerak maju sejauh 0.3 meter menuju objek.
+   - Setelah bergerak, konfirmasikan kepada user apakah robot perlu mendekat lagi.
+   - Jika user meminta robot untuk look down/up lakukan selama 10 detik, dan setelah itu langsung panggil tools capture imagenya
+   - Jika robot melakukan pergerakan maju setelah mencapai koordinat target objek, robot harus melakukan pergerakan mundur (reverse movement) ke posisi semula sebelum melanjutkan ke rencana atau task berikutnya.
    - TANYAKAN kepada user apakah ingin melanjutkan, mengubah rencana, atau menghentikan proses.
    - Jika user mengatakan “aman”, lanjut ke aksi berikutnya.
    - Jika user meminta perubahan, perbarui rencana sesuai instruksi user.
