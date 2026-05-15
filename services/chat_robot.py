@@ -11,7 +11,7 @@ import io
 import time
 import httpx 
 import docx 
-from langfuse.decorators import observe, langfuse_context
+from langfuse import Langfuse
 
 from schemas.request import QuestionRequest
 from fastmcp.client.transports import StreamableHttpTransport
@@ -30,11 +30,11 @@ class ChatRobot():
         load_dotenv()
         self.gemini_client = genai.Client(api_key=self.settings.google_key)
         self.supabase: SupabaseClient = create_client(self.settings.supabase_url, self.settings.supabase_key)
+        self.langfuse = Langfuse()
         self.req = None
 
     # --- HISTORY MANAGEMENT ---
 
-    @observe()
     def generate_session_title(self, session_id: str, user_prompt: str, bot_answer: str):
         """
         Membuat judul sesi berdasarkan konteks percakapan pertama menggunakan Gemini.
@@ -56,12 +56,26 @@ class ChatRobot():
                 f"Model: {bot_answer}"
             )
 
+            # Langfuse: Buat trace dan generation untuk pembuatan judul
+            trace = self.langfuse.trace(
+                name="generate_session_title",
+                session_id=str(session_id),
+                input={"user_prompt": user_prompt, "bot_answer": bot_answer}
+            )
+            generation = trace.generation(
+                name="gemini_title_generation",
+                model="gemini-2.5-flash",
+                input=title_prompt
+            )
+
             resp = self.gemini_client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=title_prompt
             )
             
             new_title = resp.text.strip()
+            generation.end(output=new_title)
+            trace.update(output=new_title)
             
             self.supabase.table("chat-sessions").update({
                 "title": new_title
@@ -261,12 +275,10 @@ class ChatRobot():
 
     # --- MAIN PROCESS ---
 
-    @observe()
     async def main(self, req: QuestionRequest):
         self.req = req
         return await self.process_chat()
 
-    @observe()
     async def process_chat(self):
         transport = StreamableHttpTransport(url=self.settings.mcp_url)
         client = FastMCPClient(transport)
@@ -286,12 +298,26 @@ class ChatRobot():
         self.save_message(session_id, user_msg)
         print(f"User: {self.req.user_prompt}\n")
 
+        # Langfuse: Inisiasi Trace untuk satu alur percakapan
+        trace = self.langfuse.trace(
+            name="process_chat",
+            session_id=str(session_id),
+            input=self.req.user_prompt
+        )
+
         async with client:
             await client.ping()
             tools_response = await client.list_tools()
             gemini_tools = convert_mcp_tools_to_gemini(tools_response)
 
             while True:
+                # Langfuse: Catat iterasi ke Gemini
+                generation = trace.generation(
+                    name="gemini_generation",
+                    model="gemini-2.5-pro",
+                    input=f"[{len(messages)} messages in context]"
+                )
+
                 # Retry logic for transient network errors (DNS, connection)
                 max_retries = 3
                 for attempt in range(max_retries):
@@ -313,23 +339,28 @@ class ChatRobot():
                             await asyncio.sleep(wait_time)
                         else:
                             print(f"   ❌ Network error persisted after {max_retries} attempts")
+                            generation.end(level="ERROR", status_message=str(e))
                             raise
 
-                # Langfuse: Catat penggunaan token dari Gemini
+                candidate = response.candidates[0]
+                has_function_call = any(part.function_call for part in candidate.content.parts)
+
+                # Langfuse: Selesaikan generation dengan metadata usage dan output
                 if hasattr(response, 'usage_metadata') and response.usage_metadata:
-                    langfuse_context.update_current_observation(
+                    generation.end(
+                        output="Function Call" if has_function_call else candidate.content.parts[0].text,
                         usage={
                             "input": getattr(response.usage_metadata, 'prompt_token_count', 0),
                             "output": getattr(response.usage_metadata, 'candidates_token_count', 0),
                             "total": getattr(response.usage_metadata, 'total_token_count', 0),
                         }
                     )
+                else:
+                    generation.end(output="Function Call" if has_function_call else getattr(candidate.content.parts[0], 'text', str(candidate.content.parts)))
 
-                candidate = response.candidates[0]
                 messages.append(candidate.content)
                 
                 # Cek apakah response berisi function_call (tidak ditampilkan di UI)
-                has_function_call = any(part.function_call for part in candidate.content.parts)
                 self.save_message(session_id, candidate.content, showed=not has_function_call)
 
                 found_tool_call = False
@@ -408,6 +439,11 @@ class ChatRobot():
             user_prompt=self.req.user_prompt, 
             bot_answer=final_answer
         )
+
+        trace.update(output=final_answer)
+
+        # Ensure events are sent before returning
+        self.langfuse.flush()
 
         return {
             "session_id": session_id,
