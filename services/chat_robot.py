@@ -13,7 +13,6 @@ import httpx
 import docx 
 from langfuse import observe, propagate_attributes, get_client
 
-langfuse_client = get_client()
 
 from schemas.request import QuestionRequest
 from fastmcp.client.transports import StreamableHttpTransport
@@ -28,6 +27,7 @@ from supabase import create_client, Client as SupabaseClient
 class ChatRobot():
 
     def __init__(self):
+        self.langfuse_client = get_client()
         self.settings = Settings()
         load_dotenv()
         self.gemini_client = genai.Client(api_key=self.settings.google_key)
@@ -272,7 +272,7 @@ class ChatRobot():
     @observe(as_type="generation")
     async def _call_gemini(self, messages, gemini_tools):
         # Log input and model before making the call
-        langfuse_client.update_current_generation(
+        self.langfuse_client.update_current_generation(
             input=f"[{len(messages)} messages context]",
             model='gemini-2.5-pro'
         )
@@ -291,7 +291,7 @@ class ChatRobot():
                 
                 # Trace token usage
                 if hasattr(response, 'usage_metadata') and response.usage_metadata:
-                    langfuse_client.update_current_generation(
+                    self.langfuse_client.update_current_generation(
                         usage_details={
                             "input": getattr(response.usage_metadata, 'prompt_token_count', 0),
                             "output": getattr(response.usage_metadata, 'candidates_token_count', 0)
@@ -314,7 +314,6 @@ class ChatRobot():
         runtime_file_injection = None 
         response_payload = {}
         tool_args["session_id"] = str(session_id)
-        
         print(f"🔧 Calling tool: {tool_name}({tool_args})")
         
         try:
@@ -359,76 +358,83 @@ class ChatRobot():
         self.req = req
         return await self.process_chat()
 
-    @observe()
     async def process_chat(self):
-        transport = StreamableHttpTransport(url=self.settings.mcp_url)
-        client = FastMCPClient(transport)
-
         session_id = self.req.session_id
-        messages = []
-
         if not session_id:
             session_id = self.create_history()
-        else:
-            print(f"📜 Loading history for session: {session_id}")
+        
+        w3c_trace_id = self.langfuse_client.create_trace_id(seed=session_id)
+        
+        with self.langfuse_client.start_as_current_observation(
+            as_type="trace",
+            name="process_chat",
+            id=w3c_trace_id,
+            session_id=session_id,
+            input={"user_prompt": self.req.user_prompt}
+        ) as trace:
+            transport = StreamableHttpTransport(url=self.settings.mcp_url)
+            client = FastMCPClient(transport)
+
             messages = self.get_history(session_id)
 
-        with propagate_attributes(session_id=str(session_id)):
-            user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
-            messages.append(user_msg)
-            
-            self.save_message(session_id, user_msg)
-            print(f"User: {self.req.user_prompt}\n")
+            with propagate_attributes(session_id=str(session_id)):
+                user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
+                messages.append(user_msg)
+                
+                self.save_message(session_id, user_msg)
+                print(f"User: {self.req.user_prompt}\n")
 
-            async with client:
-                gemini_tools = await self._fetch_mcp_tools(client)
+                async with client:
+                    gemini_tools = await self._fetch_mcp_tools(client)
 
-                while True:
-                    response = await self._call_gemini(messages, gemini_tools)
-                    candidate = response.candidates[0]
-                    messages.append(candidate.content)
-                    
-                    # Cek apakah response berisi function_call (tidak ditampilkan di UI)
-                    has_function_call = any(part.function_call for part in candidate.content.parts)
-                    self.save_message(session_id, candidate.content, showed=not has_function_call)
+                    while True:
+                        response = await self._call_gemini(messages, gemini_tools)
+                        candidate = response.candidates[0]
+                        messages.append(candidate.content)
+                        
+                        # Cek apakah response berisi function_call (tidak ditampilkan di UI)
+                        has_function_call = any(part.function_call for part in candidate.content.parts)
+                        self.save_message(session_id, candidate.content, showed=not has_function_call)
 
-                    found_tool_call = False
-                    
-                    if candidate.content.parts:
-                        for part in candidate.content.parts:
-                            if part.function_call:
-                                found_tool_call = True
-                                tool_name = part.function_call.name
-                                tool_args = dict(part.function_call.args) if part.function_call.args else {}
-                                
-                                tool_msg, runtime_file_injection = await self._process_tool_call(
-                                    client=client, 
-                                    tool_name=tool_name, 
-                                    tool_args=tool_args, 
-                                    session_id=session_id
-                                )
-                                
-                                messages.append(tool_msg)
-                                self.save_message(session_id, tool_msg, showed=False) 
-               
-                                if runtime_file_injection:
-                                    print("   📎 Injecting file bytes to Gemini context (Runtime)...")
-                                    messages.append(runtime_file_injection)
+                        found_tool_call = False
+                        
+                        if candidate.content.parts:
+                            for part in candidate.content.parts:
+                                if part.function_call:
+                                    found_tool_call = True
+                                    tool_name = part.function_call.name
+                                    tool_args = dict(part.function_call.args) if part.function_call.args else {}
+                                    
+                                    tool_msg, runtime_file_injection = await self._process_tool_call(
+                                        client=client, 
+                                        tool_name=tool_name, 
+                                        tool_args=tool_args, 
+                                        session_id=session_id
+                                    )
+                                    
+                                    messages.append(tool_msg)
+                                    self.save_message(session_id, tool_msg, showed=False) 
+                   
+                                    if runtime_file_injection:
+                                        print("   📎 Injecting file bytes to Gemini context (Runtime)...")
+                                        messages.append(runtime_file_injection)
 
-                    if not found_tool_call:
-                        if candidate.content.parts and candidate.content.parts[0].text:
-                            print(f"\n✨ Final Response: {candidate.content.parts[0].text}")
-                        break
+                        if not found_tool_call:
+                            if candidate.content.parts and candidate.content.parts[0].text:
+                                print(f"\n✨ Final Response: {candidate.content.parts[0].text}")
+                            break
 
-            final_answer = messages[-1].parts[0].text
-            
-            self.generate_session_title(
-                session_id=session_id, 
-                user_prompt=self.req.user_prompt, 
-                bot_answer=final_answer
-            )
+                final_answer = messages[-1].parts[0].text
+                
+                self.generate_session_title(
+                    session_id=session_id, 
+                    user_prompt=self.req.user_prompt, 
+                    bot_answer=final_answer
+                )
 
-            return {
-                "session_id": session_id,
-                "answer": final_answer
-            }
+                trace.update(output=final_answer)
+
+                return {
+                    "session_id": session_id,
+                    "answer": final_answer
+                }
