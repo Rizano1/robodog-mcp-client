@@ -363,7 +363,7 @@ class ChatRobot():
         if not session_id:
             session_id = self.create_history()
         
-        w3c_trace_id = self.langfuse_client.create_trace_id(seed=session_id)
+        w3c_trace_id = self.langfuse_client.create_trace_id(seed=str(session_id))
         
         with self.langfuse_client.start_as_current_observation(
             as_type="trace",
