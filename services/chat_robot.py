@@ -11,7 +11,7 @@ import io
 import time
 import httpx 
 import docx 
-from langfuse.decorators import observe, langfuse_context
+from langfuse import observe
 
 from schemas.request import QuestionRequest
 from fastmcp.client.transports import StreamableHttpTransport
@@ -314,16 +314,6 @@ class ChatRobot():
                         else:
                             print(f"   ❌ Network error persisted after {max_retries} attempts")
                             raise
-
-                # Langfuse: Catat penggunaan token dari Gemini
-                if hasattr(response, 'usage_metadata') and response.usage_metadata:
-                    langfuse_context.update_current_observation(
-                        usage={
-                            "input": getattr(response.usage_metadata, 'prompt_token_count', 0),
-                            "output": getattr(response.usage_metadata, 'candidates_token_count', 0),
-                            "total": getattr(response.usage_metadata, 'total_token_count', 0),
-                        }
-                    )
 
                 candidate = response.candidates[0]
                 messages.append(candidate.content)
