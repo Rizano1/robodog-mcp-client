@@ -11,7 +11,7 @@ import io
 import time
 import httpx 
 import docx 
-from langfuse import observe
+from langfuse import observe, propagate_attributes
 
 from schemas.request import QuestionRequest
 from fastmcp.client.transports import StreamableHttpTransport
@@ -262,6 +262,81 @@ class ChatRobot():
     # --- MAIN PROCESS ---
 
     @observe()
+    async def _fetch_mcp_tools(self, client):
+        await client.ping()
+        tools_response = await client.list_tools()
+        return convert_mcp_tools_to_gemini(tools_response)
+
+    @observe(as_type="generation")
+    async def _call_gemini(self, messages, gemini_tools):
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.gemini_client.models.generate_content(
+                    model='gemini-2.5-pro', 
+                    contents=messages,
+                    config=types.GenerateContentConfig(
+                        tools=gemini_tools,
+                        system_instruction=system_prompt
+                    ),
+                )
+                return response
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                    print(f"   ⚠️ Network error (attempt {attempt + 1}/{max_retries}): {e}")
+                    print(f"   🔄 Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"   ❌ Network error persisted after {max_retries} attempts")
+                    raise
+
+    @observe()
+    async def _process_tool_call(self, client, tool_name, tool_args, session_id):
+        runtime_file_injection = None 
+        response_payload = {}
+        tool_args["session_id"] = str(session_id)
+        
+        print(f"🔧 Calling tool: {tool_name}({tool_args})")
+        
+        try:
+            result = await client.call_tool(tool_name, tool_args)
+            raw_output = result.content[0].text if hasattr(result, 'content') else str(result)
+            print(f"🔧 Result tool: {tool_name}: {raw_output}")
+            parsed_output = json.loads(raw_output)
+            response_payload = parsed_output
+
+            if isinstance(parsed_output, dict):
+                msg_type = parsed_output.get("type")
+                status = parsed_output.get("status")
+                
+                if msg_type == "file_retrieve" and status == "success":
+                    print("   📄 File detected. Downloading for current context...")
+                    data = parsed_output.get("data", {})
+                    folder = data.get("folder", "sop")
+                    filename = data.get("filename")
+                    runtime_file_injection = self.download_file(filename, folder)
+
+                elif msg_type == "image_capture" and status == "success":
+                    print("   📸 Image captured. Downloading for current context...")
+                    data = parsed_output.get("data", {})
+                    filepath = data.get("filepath")
+                    runtime_file_injection = self.download_image(filepath)
+
+        except Exception as e:
+            print(f"   ❌ Error: {e}")
+            response_payload = {"error": str(e)}
+
+        tool_msg = types.Content(
+            role='tool',
+            parts=[types.Part.from_function_response(
+                name=tool_name,
+                response=response_payload
+            )]
+        )
+        return tool_msg, runtime_file_injection
+
+    @observe()
     async def main(self, req: QuestionRequest):
         self.req = req
         return await self.process_chat()
@@ -280,126 +355,62 @@ class ChatRobot():
             print(f"📜 Loading history for session: {session_id}")
             messages = self.get_history(session_id)
 
-        user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
-        messages.append(user_msg)
-        
-        self.save_message(session_id, user_msg)
-        print(f"User: {self.req.user_prompt}\n")
+        with propagate_attributes(session_id=str(session_id)):
+            user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
+            messages.append(user_msg)
+            
+            self.save_message(session_id, user_msg)
+            print(f"User: {self.req.user_prompt}\n")
 
-        async with client:
-            await client.ping()
-            tools_response = await client.list_tools()
-            gemini_tools = convert_mcp_tools_to_gemini(tools_response)
+            async with client:
+                gemini_tools = await self._fetch_mcp_tools(client)
 
-            while True:
-                # Retry logic for transient network errors (DNS, connection)
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        response = self.gemini_client.models.generate_content(
-                            model='gemini-2.5-pro', 
-                            contents=messages,
-                            config=types.GenerateContentConfig(
-                                tools=gemini_tools,
-                                system_instruction=system_prompt
-                            ),
-                        )
-                        break  # Success, exit retry loop
-                    except (httpx.ConnectError, httpx.TimeoutException) as e:
-                        if attempt < max_retries - 1:
-                            wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
-                            print(f"   ⚠️ Network error (attempt {attempt + 1}/{max_retries}): {e}")
-                            print(f"   🔄 Retrying in {wait_time}s...")
-                            await asyncio.sleep(wait_time)
-                        else:
-                            print(f"   ❌ Network error persisted after {max_retries} attempts")
-                            raise
+                while True:
+                    response = await self._call_gemini(messages, gemini_tools)
+                    candidate = response.candidates[0]
+                    messages.append(candidate.content)
+                    
+                    # Cek apakah response berisi function_call (tidak ditampilkan di UI)
+                    has_function_call = any(part.function_call for part in candidate.content.parts)
+                    self.save_message(session_id, candidate.content, showed=not has_function_call)
 
-                candidate = response.candidates[0]
-                messages.append(candidate.content)
-                
-                # Cek apakah response berisi function_call (tidak ditampilkan di UI)
-                has_function_call = any(part.function_call for part in candidate.content.parts)
-                self.save_message(session_id, candidate.content, showed=not has_function_call)
+                    found_tool_call = False
+                    
+                    if candidate.content.parts:
+                        for part in candidate.content.parts:
+                            if part.function_call:
+                                found_tool_call = True
+                                tool_name = part.function_call.name
+                                tool_args = dict(part.function_call.args) if part.function_call.args else {}
+                                
+                                tool_msg, runtime_file_injection = await self._process_tool_call(
+                                    client=client, 
+                                    tool_name=tool_name, 
+                                    tool_args=tool_args, 
+                                    session_id=session_id
+                                )
+                                
+                                messages.append(tool_msg)
+                                self.save_message(session_id, tool_msg, showed=False) 
+               
+                                if runtime_file_injection:
+                                    print("   📎 Injecting file bytes to Gemini context (Runtime)...")
+                                    messages.append(runtime_file_injection)
 
-                found_tool_call = False
-                
-                if candidate.content.parts:
-                    for part in candidate.content.parts:
-                        if part.function_call:
-                            found_tool_call = True
-                            tool_name = part.function_call.name
-                            tool_args = dict(part.function_call.args) if part.function_call.args else {}
-                            
-                            # Inject session_id into every tool call
-                            tool_args["session_id"] = str(session_id)
-                            
-                            print(f"🔧 Calling tool: {tool_name}({tool_args})")
-                            
-                            runtime_file_injection = None 
-                            response_payload = {}
+                    if not found_tool_call:
+                        if candidate.content.parts and candidate.content.parts[0].text:
+                            print(f"\n✨ Final Response: {candidate.content.parts[0].text}")
+                        break
 
-                            try:
-                                result = await client.call_tool(tool_name, tool_args)
-                                raw_output = result.content[0].text if hasattr(result, 'content') else str(result)
-                                print(f"🔧 Result tool: {tool_name}: {raw_output}")
-                                parsed_output = json.loads(raw_output)
-                                response_payload = parsed_output
+            final_answer = messages[-1].parts[0].text
+            
+            self.generate_session_title(
+                session_id=session_id, 
+                user_prompt=self.req.user_prompt, 
+                bot_answer=final_answer
+            )
 
-                                if isinstance(parsed_output, dict):
-                                    msg_type = parsed_output.get("type")
-                                    status = parsed_output.get("status")
-                                    
-                                    if msg_type == "file_retrieve" and status == "success":
-                                        print("   📄 File detected. Downloading for current context...")
-                                        
-                                        data = parsed_output.get("data", {})
-                                        folder = data.get("folder", "sop")
-                                        filename = data.get("filename")
-                                        
-                                        runtime_file_injection = self.download_file(filename, folder)
-
-                                    elif msg_type == "image_capture" and status == "success":
-                                        print("   📸 Image captured. Downloading for current context...")
-                                        
-                                        data = parsed_output.get("data", {})
-                                        filepath = data.get("filepath")
-                                        
-                                        runtime_file_injection = self.download_image(filepath)
-
-                            except Exception as e:
-                                print(f"   ❌ Error: {e}")
-                                response_payload = {"error": str(e)}
-
-                            tool_msg = types.Content(
-                                role='tool',
-                                parts=[types.Part.from_function_response(
-                                    name=tool_name,
-                                    response=response_payload
-                                )]
-                            )
-                            messages.append(tool_msg)
-                            self.save_message(session_id, tool_msg, showed=False) 
-                            
-           
-                            if runtime_file_injection:
-                                print("   📎 Injecting file bytes to Gemini context (Runtime)...")
-                                messages.append(runtime_file_injection)
-
-                if not found_tool_call:
-                    if candidate.content.parts and candidate.content.parts[0].text:
-                        print(f"\n✨ Final Response: {candidate.content.parts[0].text}")
-                    break
-
-        final_answer = messages[-1].parts[0].text
-        
-        self.generate_session_title(
-            session_id=session_id, 
-            user_prompt=self.req.user_prompt, 
-            bot_answer=final_answer
-        )
-
-        return {
-            "session_id": session_id,
-            "answer": final_answer
-        }
+            return {
+                "session_id": session_id,
+                "answer": final_answer
+            }
