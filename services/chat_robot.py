@@ -293,7 +293,7 @@ class ChatRobot():
                 for attempt in range(max_retries):
                     try:
                         response = self.gemini_client.models.generate_content(
-                            model='gemini-2.5-flash', 
+                            model='gemini-2.5-pro', 
                             contents=messages,
                             config=types.GenerateContentConfig(
                                 tools=gemini_tools,
