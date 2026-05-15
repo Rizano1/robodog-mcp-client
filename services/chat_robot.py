@@ -11,7 +11,9 @@ import io
 import time
 import httpx 
 import docx 
-from langfuse import observe, propagate_attributes
+from langfuse import observe, propagate_attributes, get_client
+
+langfuse_client = get_client()
 
 from schemas.request import QuestionRequest
 from fastmcp.client.transports import StreamableHttpTransport
@@ -269,6 +271,12 @@ class ChatRobot():
 
     @observe(as_type="generation")
     async def _call_gemini(self, messages, gemini_tools):
+        # Log input and model before making the call
+        langfuse_client.update_current_generation(
+            input=f"[{len(messages)} messages context]",
+            model='gemini-2.5-pro'
+        )
+
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -280,6 +288,16 @@ class ChatRobot():
                         system_instruction=system_prompt
                     ),
                 )
+                
+                # Trace token usage
+                if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                    langfuse_client.update_current_generation(
+                        usage_details={
+                            "input": getattr(response.usage_metadata, 'prompt_token_count', 0),
+                            "output": getattr(response.usage_metadata, 'candidates_token_count', 0)
+                        }
+                    )
+                
                 return response
             except (httpx.ConnectError, httpx.TimeoutException) as e:
                 if attempt < max_retries - 1:
