@@ -366,10 +366,9 @@ class ChatRobot():
         w3c_trace_id = self.langfuse_client.create_trace_id(seed=str(session_id))
         
         with self.langfuse_client.start_as_current_observation(
-            as_type="trace",
+            as_type="agent",
             name="process_chat",
-            id=w3c_trace_id,
-            session_id=session_id,
+            trace_context={"trace_id": w3c_trace_id},
             input={"user_prompt": self.req.user_prompt}
         ) as trace:
             transport = StreamableHttpTransport(url=self.settings.mcp_url)
