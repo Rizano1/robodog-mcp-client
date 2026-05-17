@@ -389,6 +389,17 @@ class ChatRobot():
                 while True:
                     response = await self._call_gemini(messages, gemini_tools)
                     candidate = response.candidates[0]
+                    
+                    # Guard: Gemini may return None parts (safety block, empty response)
+                    if not candidate.content or not candidate.content.parts:
+                        print("   ⚠️ Gemini returned empty response (no parts). Retrying...")
+                        # Append a nudge so Gemini knows it needs to respond
+                        messages.append(types.Content(
+                            role='user',
+                            parts=[types.Part.from_text(text="[System] Your previous response was empty. Please try again.")]
+                        ))
+                        continue
+
                     messages.append(candidate.content)
                     
                     # Cek apakah response berisi function_call (tidak ditampilkan di UI)
@@ -397,33 +408,32 @@ class ChatRobot():
 
                     found_tool_call = False
                     
-                    if candidate.content.parts:
-                        for part in candidate.content.parts:
-                            if part.function_call:
-                                found_tool_call = True
-                                tool_name = part.function_call.name
-                                tool_args = dict(part.function_call.args) if part.function_call.args else {}
-                                
-                                tool_msg, runtime_file_injection = await self._process_tool_call(
-                                    client=client, 
-                                    tool_name=tool_name, 
-                                    tool_args=tool_args, 
-                                    session_id=session_id
-                                )
-                                
-                                messages.append(tool_msg)
-                                self.save_message(session_id, tool_msg, showed=False) 
-               
-                                if runtime_file_injection:
-                                    print("   📎 Injecting file bytes to Gemini context (Runtime)...")
-                                    messages.append(runtime_file_injection)
+                    for part in candidate.content.parts:
+                        if part.function_call:
+                            found_tool_call = True
+                            tool_name = part.function_call.name
+                            tool_args = dict(part.function_call.args) if part.function_call.args else {}
+                            
+                            tool_msg, runtime_file_injection = await self._process_tool_call(
+                                client=client, 
+                                tool_name=tool_name, 
+                                tool_args=tool_args, 
+                                session_id=session_id
+                            )
+                            
+                            messages.append(tool_msg)
+                            self.save_message(session_id, tool_msg, showed=False) 
+           
+                            if runtime_file_injection:
+                                print("   📎 Injecting file bytes to Gemini context (Runtime)...")
+                                messages.append(runtime_file_injection)
 
                     if not found_tool_call:
-                        if candidate.content.parts and candidate.content.parts[0].text:
+                        if candidate.content.parts[0].text:
                             print(f"\n✨ Final Response: {candidate.content.parts[0].text}")
                         break
 
-            final_answer = messages[-1].parts[0].text
+            final_answer = messages[-1].parts[0].text if messages[-1].parts else ""
             
             self.generate_session_title(
                 session_id=session_id, 
