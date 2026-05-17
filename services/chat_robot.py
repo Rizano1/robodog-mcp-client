@@ -285,7 +285,7 @@ class ChatRobot():
                     contents=messages,
                     config=types.GenerateContentConfig(
                         tools=gemini_tools,
-                        system_instruction=system_prompt 
+                        system_instruction=system_prompt
                     ),
                 )
                 
@@ -383,13 +383,34 @@ class ChatRobot():
             messages = self.get_history(session_id)
 
         with propagate_attributes(session_id=str(session_id)):
+            # Inject robot status as a function_call/function_response pair
+            # so Gemini treats it as tool output (high attention) not user command
+            if self.req.system_prompt:
+                # 1. Fake model function_call
+                status_call_msg = types.Content(
+                    role='model',
+                    parts=[types.Part.from_function_call(
+                        name='get_robot_status',
+                        args={}
+                    )]
+                )
+                # 2. Fake tool function_response with actual robot status
+                status_response_msg = types.Content(
+                    role='tool',
+                    parts=[types.Part.from_function_response(
+                        name='get_robot_status',
+                        response={"status": self.req.system_prompt}
+                    )]
+                )
+                messages.append(status_call_msg)
+                messages.append(status_response_msg)
+                self.save_message(session_id, status_call_msg, showed=False)
+                self.save_message(session_id, status_response_msg, showed=False)
+
             user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
-            robot_status = types.Content(role='tool', parts=[types.Part.from_text(text=self.req.system_prompt)])
-            messages.append(robot_status)
             messages.append(user_msg)
             
             self.save_message(session_id, user_msg)
-            self.save_message(session_id, robot_status)
             
             print(f"User: {self.req.user_prompt}\n")
 
