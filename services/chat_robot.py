@@ -285,7 +285,7 @@ class ChatRobot():
                     contents=messages,
                     config=types.GenerateContentConfig(
                         tools=gemini_tools,
-                        system_instruction=system_prompt
+                        system_instruction=system_prompt + ("\n\n" + self.req.system_prompt if self.req and self.req.system_prompt else "")
                     ),
                 )
                 
