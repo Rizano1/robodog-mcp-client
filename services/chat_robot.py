@@ -383,10 +383,14 @@ class ChatRobot():
             messages = self.get_history(session_id)
 
         with propagate_attributes(session_id=str(session_id)):
+            user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
+            messages.append(user_msg)
+            self.save_message(session_id, user_msg)
+
             # Inject robot status as a function_call/function_response pair
             # so Gemini treats it as tool output (high attention) not user command
+            # Must come AFTER user turn (Gemini requires function_call after user or function_response turn)
             if self.req.system_prompt:
-                # 1. Fake model function_call
                 status_call_msg = types.Content(
                     role='model',
                     parts=[types.Part.from_function_call(
@@ -394,7 +398,6 @@ class ChatRobot():
                         args={}
                     )]
                 )
-                # 2. Fake tool function_response with actual robot status
                 status_response_msg = types.Content(
                     role='tool',
                     parts=[types.Part.from_function_response(
@@ -406,11 +409,6 @@ class ChatRobot():
                 messages.append(status_response_msg)
                 self.save_message(session_id, status_call_msg, showed=False)
                 self.save_message(session_id, status_response_msg, showed=False)
-
-            user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
-            messages.append(user_msg)
-            
-            self.save_message(session_id, user_msg)
             
             print(f"User: {self.req.user_prompt}\n")
 
