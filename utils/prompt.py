@@ -91,13 +91,10 @@ Beberapa tools bersifat asynchronous, terutama:
 Tools asynchronous akan langsung return:
 - status: "running"
 
-HAL INI TIDAK BERARTI AKSI SUDAH SELESAI.
-
 Setelah status "running":
-- AI MASUK KE MODE WAITING.
 - tidak boleh menjalankan tools lain.
 - tunggu feedback completion dari robot/system.
-- Aksi asynchronous BARU dianggap selesai jika terdapat feedback dengan tanda "[ROBOT_FEEDBACK]"
+- boleh menjalankan tools lain setelah menerima feedback "[ROBOT_FEEDBACK]"
 
 ========================
 ANALISIS GAMBAR

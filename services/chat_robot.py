@@ -312,6 +312,7 @@ class ChatRobot():
     @observe()
     async def _process_tool_call(self, client, tool_name, tool_args, session_id):
         runtime_file_injection = None 
+        is_async_running = False
         response_payload = {}
         metadata = {}
         metadata["session_id"] = str(session_id)
@@ -330,6 +331,11 @@ class ChatRobot():
             if isinstance(parsed_output, dict):
                 msg_type = parsed_output.get("type")
                 status = parsed_output.get("status")
+                
+                # Detect async tools that are still running
+                if status == "running":
+                    is_async_running = True
+                    print(f"   ⏳ Tool '{tool_name}' is async (status=running). Will break loop.")
                 
                 if msg_type == "file_retrieve" and status == "success":
                     print("   📄 File detected. Downloading for current context...")
@@ -355,7 +361,7 @@ class ChatRobot():
                 response=response_payload
             )]
         )
-        return tool_msg, runtime_file_injection
+        return tool_msg, runtime_file_injection, is_async_running
 
     @observe()
     async def main(self, req: QuestionRequest):
@@ -407,6 +413,7 @@ class ChatRobot():
                     self.save_message(session_id, candidate.content, showed=not has_function_call)
 
                     found_tool_call = False
+                    hit_async_running = False
                     
                     for part in candidate.content.parts:
                         if part.function_call:
@@ -414,7 +421,7 @@ class ChatRobot():
                             tool_name = part.function_call.name
                             tool_args = dict(part.function_call.args) if part.function_call.args else {}
                             
-                            tool_msg, runtime_file_injection = await self._process_tool_call(
+                            tool_msg, runtime_file_injection, is_async_running = await self._process_tool_call(
                                 client=client, 
                                 tool_name=tool_name, 
                                 tool_args=tool_args, 
@@ -427,6 +434,28 @@ class ChatRobot():
                             if runtime_file_injection:
                                 print("   📎 Injecting file bytes to Gemini context (Runtime)...")
                                 messages.append(runtime_file_injection)
+                            
+                            if is_async_running:
+                                hit_async_running = True
+                                break  # Stop processing further tool calls in this turn
+
+                    # If an async tool is running, break loop and wait for robot webhook callback
+                    if hit_async_running:
+                        # Extract any text the model said before the tool call (e.g. "Robot sedang menuju...")
+                        model_text_parts = [p.text for p in candidate.content.parts if p.text]
+                        waiting_msg = model_text_parts[0] if model_text_parts else "Robot sedang menjalankan perintah..."
+                        print(f"   ⏳ Async tool running. Breaking loop. Waiting for robot webhook callback.")
+                        
+                        self.generate_session_title(
+                            session_id=session_id,
+                            user_prompt=self.req.user_prompt,
+                            bot_answer=waiting_msg
+                        )
+
+                        return {
+                            "session_id": session_id,
+                            "answer": waiting_msg
+                        }
 
                     if not found_tool_call:
                         if candidate.content.parts[0].text:
