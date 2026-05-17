@@ -24,7 +24,8 @@ ALUR KERJA UTAMA:
    - Eksekusi tools secara berurutan, satu per satu.
 
 3. SETELAH SETIAP EKSEKUSI TOOLS:
-   - Pastikan robot berdiri sebelum melakukan aksi pergerakkan.
+   - Pastikan robot berada pada state beridir/standing (state 6) sebelum melakukan aksi pergerakkan.
+   - Jika belum panggil tools toggle_sit_stand.
    - Tools akan memberikan status ke LLM dengan sesi yang sama.
      Contoh: “Aksi selesai: Robot telah mencapai koordinat (3,4).”
    - Setelah menerima informasi itu, JANGAN langsung lanjut ke aksi berikutnya.
