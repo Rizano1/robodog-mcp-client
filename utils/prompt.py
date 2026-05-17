@@ -80,13 +80,7 @@ Sebelum melakukan pergerakan:
 ========================
 ATURAN TOOL ASYNCHRONOUS
 ========================
-
-Beberapa tools bersifat asynchronous, terutama:
-- navigate_to_waypoint
-- move
-- rotate
-- docking
-- seluruh aksi movement robot
+Tools yang bersifat asynchronous diawali dengan "async_".
 
 Tools asynchronous akan langsung return:
 - status: "running"
