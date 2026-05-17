@@ -1,4 +1,3 @@
-from utils.tools import langfuse_client
 from pprint import pprint
 from textwrap import dedent
 from google import genai
@@ -13,6 +12,7 @@ import time
 import httpx 
 import docx 
 from langfuse import observe, propagate_attributes, get_client
+from langfuse.decorators import langfuse_context
 
 
 from schemas.request import QuestionRequest
@@ -316,8 +316,8 @@ class ChatRobot():
         response_payload = {}
         metadata = {}
         metadata["session_id"] = str(session_id)
-        metadata["trace_id"] = self.langfuse_client.get_current_trace_id()
-        metadata["observation_id"] = self.langfuse_client.get_current_observation_id()
+        metadata["trace_id"] = langfuse_context.get_current_trace_id()
+        metadata["observation_id"] = langfuse_context.get_current_observation_id()
         
         print(f"🔧 Calling tool: {tool_name}({tool_args})")
         
@@ -365,7 +365,6 @@ class ChatRobot():
 
     @observe()
     async def process_chat(self):
-        self.langfuse_client.langfuse.create_trace_id(seed=self.req.session_id)
         transport = StreamableHttpTransport(url=self.settings.mcp_url)
         client = FastMCPClient(transport)
 
