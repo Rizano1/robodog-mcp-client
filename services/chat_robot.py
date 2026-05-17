@@ -285,7 +285,7 @@ class ChatRobot():
                     contents=messages,
                     config=types.GenerateContentConfig(
                         tools=gemini_tools,
-                        system_instruction=system_prompt + ("\n\n" + self.req.system_prompt if self.req and self.req.system_prompt else "")
+                        system_instruction=system_prompt 
                     ),
                 )
                 
@@ -384,9 +384,13 @@ class ChatRobot():
 
         with propagate_attributes(session_id=str(session_id)):
             user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
+            robot_status = types.Content(role='tool', parts=[types.Part.from_text(text=self.req.system_prompt)])
+            messages.append(robot_status)
             messages.append(user_msg)
             
             self.save_message(session_id, user_msg)
+            self.save_message(session_id, robot_status)
+            
             print(f"User: {self.req.user_prompt}\n")
 
             async with client:
