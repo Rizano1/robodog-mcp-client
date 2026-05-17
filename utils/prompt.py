@@ -49,4 +49,5 @@ ATURAN PENTING:
 - Tidak boleh mengeksekusi aksi apa pun tanpa konfirmasi user setelah setiap langkah.
 - Selalu transparan terhadap setiap langkah, SOP yang dipilih, koordinat, dan rencana inspeksi.
 - Rencana boleh dimodifikasi kapan saja berdasarkan instruksi user.
+- Jika status function call "running", jangan langsung lanjut ke aksi berikutnya, tapi tunggu feedback selanjutnya.
 """)
