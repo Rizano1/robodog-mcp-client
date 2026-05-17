@@ -12,7 +12,6 @@ import time
 import httpx 
 import docx 
 from langfuse import observe, propagate_attributes, get_client
-from langfuse.decorators import langfuse_context
 
 
 from schemas.request import QuestionRequest
@@ -316,8 +315,8 @@ class ChatRobot():
         response_payload = {}
         metadata = {}
         metadata["session_id"] = str(session_id)
-        metadata["trace_id"] = langfuse_context.get_current_trace_id()
-        metadata["observation_id"] = langfuse_context.get_current_observation_id()
+        metadata["trace_id"] = self.langfuse_client.get_current_trace_id()
+        metadata["observation_id"] = self.langfuse_client.get_current_observation_id()
         
         print(f"🔧 Calling tool: {tool_name}({tool_args})")
         
