@@ -271,17 +271,18 @@ class ChatRobot():
 
     @observe(as_type="generation")
     async def _call_gemini(self, messages, gemini_tools):
+        model_name = (self.req.model_name or "gemini-2.5-flash") if self.req else "gemini-2.5-flash"
         # Log input and model before making the call
         self.langfuse_client.update_current_generation(
             input=f"[{len(messages)} messages context]",
-            model='gemini-3-flash-preview'
+            model=model_name
         )
 
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 response = self.gemini_client.models.generate_content(
-                    model='gemini-3-flash-preview', 
+                    model=model_name,
                     contents=messages,
                     config=types.GenerateContentConfig(
                         tools=gemini_tools,
