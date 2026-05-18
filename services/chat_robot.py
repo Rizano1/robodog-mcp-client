@@ -274,14 +274,14 @@ class ChatRobot():
         # Log input and model before making the call
         self.langfuse_client.update_current_generation(
             input=f"[{len(messages)} messages context]",
-            model='gemini-2.5-pro'
+            model='gemini-3-flash-preview'
         )
 
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 response = self.gemini_client.models.generate_content(
-                    model='gemini-2.5-pro', 
+                    model='gemini-3-flash-preview', 
                     contents=messages,
                     config=types.GenerateContentConfig(
                         tools=gemini_tools,
