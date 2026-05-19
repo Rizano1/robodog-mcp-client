@@ -345,11 +345,11 @@ class ChatRobot():
                     filename = data.get("filename")
                     runtime_file_injection = self.download_file(filename, folder)
 
-                elif msg_type == "image_capture" and status == "success":
-                    print("   📸 Image captured. Downloading for current context...")
-                    data = parsed_output.get("data", {})
-                    filepath = data.get("filepath")
-                    runtime_file_injection = self.download_image(filepath)
+                # elif msg_type == "image_capture" and status == "success":
+                #     print("   📸 Image captured. Downloading for current context...")
+                #     data = parsed_output.get("data", {})
+                #     filepath = data.get("filepath")
+                #     runtime_file_injection = self.download_image(filepath)
 
         except Exception as e:
             print(f"   ❌ Error: {e}")
