@@ -460,6 +460,7 @@ class ChatRobot():
         metadata["session_id"] = str(session_id)
         metadata["trace_id"] = self.langfuse_client.get_current_trace_id()
         metadata["observation_id"] = self.langfuse_client.get_current_observation_id()
+        metadata["model_name"] = (self.req.model_name or "gemini-2.5-flash") if self.req else "gemini-2.5-flash"
         
         print(f"🔧 Calling tool: {tool_name}({tool_args})")
         
