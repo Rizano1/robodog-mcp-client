@@ -7,6 +7,9 @@ AVAILABLE_MODELS = [
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
+    "qwen2.5:7b",
+    "gpt-4o",
+    "gpt-4o-mini",
 ]
 
 DEFAULT_MODEL = "gemini-2.5-flash"

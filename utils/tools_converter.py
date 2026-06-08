@@ -54,3 +54,31 @@ def convert_mcp_tools_to_gemini(mcp_tools):
         gemini_tools.append(gemini_tool)
 
     return gemini_tools
+
+
+def convert_mcp_tools_to_ollama(mcp_tools):
+    """
+    Converts MCP tool definitions to OpenAI-compatible format for Ollama API.
+
+    Args:
+        mcp_tools (list): List of MCP tool objects with 'name', 'description', and 'inputSchema'.
+
+    Returns:
+        list: List of OpenAI-compatible tool dicts for Ollama's /v1/chat/completions endpoint.
+    """
+    ollama_tools = []
+
+    for tool in mcp_tools:
+        # Deep copy and clean the schema
+        parameters = clean_schema(dict(tool.inputSchema))
+
+        ollama_tools.append({
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": parameters
+            }
+        })
+
+    return ollama_tools

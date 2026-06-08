@@ -11,6 +11,8 @@ class Settings:
         self.supabase_url = os.getenv("SUPABASE_URL")
         self.supabase_key = os.getenv("SUPABASE_KEY")
         self.mcp_url = os.getenv("MCP_URL")
+        self.ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.bucket_name = "robotics-prata"
 
 
