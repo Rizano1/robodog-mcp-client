@@ -24,7 +24,7 @@ from fastmcp import Client as FastMCPClient
 from supabase import create_client, Client as SupabaseClient
 
 # Models that use OpenAI-compatible API format
-OLLAMA_MODELS = {"qwen2.5:7b"}
+OLLAMA_MODELS = {"qwen3.5:27b"}
 OPENAI_MODELS = {"gpt-4o", "gpt-4o-mini"}
 
 
@@ -403,11 +403,16 @@ class ChatRobot():
         Returns:
             The response JSON dict.
         """
-        model_name = (self.req.model_name or "qwen2.5:7b") if self.req else "qwen2.5:7b"
+        model_name = (self.req.model_name or "qwen3.5:27b") if self.req else "qwen3.5:27b"
         
         self.langfuse_client.update_current_generation(
             input=f"[{len(messages)} messages context]",
-            model=model_name
+            model=model_name,
+            metadata={
+                "pengujian_tag": "Uji-Analisis-Gambar", 
+                "kategori_kondisi": "Miring",
+                "jarak_objek": "Jauh"
+            }
         )
 
         url, headers = self._get_openai_endpoint(model_name)
@@ -663,7 +668,7 @@ class ChatRobot():
         Handles tool injection and tool result in OpenAI message format,
         but persists history in Gemini format for DB consistency.
         """
-        model_name = (self.req.model_name or "qwen2.5:7b") if self.req else "qwen2.5:7b"
+        model_name = (self.req.model_name or "qwen3.5:27b") if self.req else "qwen3.5:27b"
         provider = "OpenAI" if model_name in OPENAI_MODELS else "Ollama"
 
         transport = StreamableHttpTransport(url=self.settings.mcp_url)
