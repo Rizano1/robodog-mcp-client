@@ -21,3 +21,5 @@ class QuestionRequest(BaseModel):
   files: Optional[List[str]] = None
   system_prompt: Optional[str] = None
   model_name: Optional[str] = DEFAULT_MODEL
+  tags: Optional[List[str]] = None
+  system_instruction: Optional[str] = None

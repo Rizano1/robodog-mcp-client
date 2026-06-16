@@ -11,6 +11,7 @@ import io
 import time
 import httpx 
 import docx 
+import pypdf
 from langfuse import observe, propagate_attributes, get_client
 
 
@@ -43,6 +44,19 @@ class ChatRobot():
     def _is_openai_compatible(self, model_name: str) -> bool:
         """Check if the given model uses the OpenAI-compatible API (Ollama or OpenAI GPT)."""
         return model_name in OLLAMA_MODELS or model_name in OPENAI_MODELS
+
+    def _model_supports_vision(self, model_name: str) -> bool:
+        """Check if the given model supports multimodal vision input."""
+        name_lower = model_name.lower()
+        if "gemini" in name_lower:
+            return True
+        if "gpt-4" in name_lower:
+            return True
+        if "-vl" in name_lower or "llava" in name_lower:
+            return True
+        if "qwen3.5" in name_lower:
+            return True
+        return False
 
     def _get_openai_endpoint(self, model_name: str) -> tuple[str, dict]:
         """
@@ -139,6 +153,14 @@ class ChatRobot():
                         "response": part.function_response.response
                     }
                 })
+            elif hasattr(part, 'inline_data') and part.inline_data:
+                b64_data = base64.b64encode(part.inline_data.data).decode("utf-8")
+                serialized_parts.append({
+                    "inline_data": {
+                        "mime_type": part.inline_data.mime_type,
+                        "data": b64_data
+                    }
+                })
 
         self.supabase.table("chat-messages").insert({
             "session_id": session_id,
@@ -175,6 +197,10 @@ class ChatRobot():
                     fr = item["function_response"]
                     tool_response_payload = fr["response"] 
                     parts.append(types.Part.from_function_response(name=fr["name"], response=fr["response"]))
+                elif "inline_data" in item:
+                    id_data = item["inline_data"]
+                    file_bytes = base64.b64decode(id_data["data"])
+                    parts.append(types.Part.from_bytes(data=file_bytes, mime_type=id_data["mime_type"]))
 
             gemini_messages.append(types.Content(role=role, parts=parts))
 
@@ -182,17 +208,16 @@ class ChatRobot():
                 msg_type = tool_response_payload.get("type")
                 status = tool_response_payload.get("status")
 
-                if msg_type == "file_retrieve" and status == "success":
-                    data = tool_response_payload.get("data", {})
-                    filename = data.get("filename")
-                    folder = data.get("folder", "sop") 
-                    
-                    print(f"   📂 History Replay: Re-downloading '{filename}' for context...")
-                    
-                    file_injection_msg = self.download_file(filename, folder)
-                    
-                    if file_injection_msg:
-                        gemini_messages.append(file_injection_msg)
+                if msg_type == "sop_query" and status == "success":
+                    data = tool_response_payload.get("data", [])
+                    for obj in data:
+                        sop_url = obj.get("sop_url")
+                        obj_name = obj.get("name", "unknown")
+                        if sop_url:
+                            print(f"   📂 History Replay: Re-downloading SOP for '{obj_name}' from URL...")
+                            file_injection_msg = self.download_file_from_url(sop_url, obj_name)
+                            if file_injection_msg:
+                                gemini_messages.append(file_injection_msg)
 
                 elif msg_type == "image_capture" and status == "success":
                     data = tool_response_payload.get("data", {})
@@ -207,7 +232,7 @@ class ChatRobot():
 
         return gemini_messages
 
-    def get_history_for_ollama(self, session_id: str) -> list:
+    def get_history_for_ollama(self, session_id: str, model_name: str = "") -> list:
         """
         Mengambil history dari DB dan convert ke format OpenAI messages untuk Ollama.
         File re-injection dilakukan sebagai text description (Ollama tidak support raw bytes).
@@ -218,6 +243,7 @@ class ChatRobot():
             .execute()
         
         ollama_messages = []
+        supports_vision = self._model_supports_vision(model_name) if model_name else True
 
         for row in res.data:
             role = row['role']
@@ -253,6 +279,110 @@ class ChatRobot():
                         "tool_call_id": f"call_{fr['name']}",
                         "content": json.dumps(fr["response"])
                     })
+                elif "inline_data" in item:
+                    id_data = item["inline_data"]
+                    mime = id_data["mime_type"]
+                    b64_data = id_data["data"]
+                    file_bytes = base64.b64decode(b64_data)
+
+                    if mime.startswith("image/"):
+                        if supports_vision:
+                            if ollama_messages and ollama_messages[-1]["role"] == "user":
+                                prev_content = ollama_messages[-1]["content"]
+                                if isinstance(prev_content, str):
+                                    ollama_messages[-1]["content"] = [
+                                        {"type": "text", "text": prev_content},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": f"data:{mime};base64,{b64_data}"
+                                            }
+                                        }
+                                    ]
+                                elif isinstance(prev_content, list):
+                                    ollama_messages[-1]["content"].append({
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{mime};base64,{b64_data}"
+                                        }
+                                    })
+                            else:
+                                ollama_messages.append({
+                                    "role": "user",
+                                    "content": [{
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{mime};base64,{b64_data}"
+                                        }
+                                    }]
+                                })
+                        else:
+                            text_to_append = f"\n\n[System Injection] Image attached but vision is not supported by model '{model_name}'."
+                            if ollama_messages and ollama_messages[-1]["role"] == "user":
+                                if isinstance(ollama_messages[-1]["content"], str):
+                                    ollama_messages[-1]["content"] += text_to_append
+                                elif isinstance(ollama_messages[-1]["content"], list):
+                                    ollama_messages[-1]["content"].append({"type": "text", "text": text_to_append})
+                            else:
+                                ollama_messages.append({
+                                    "role": "user",
+                                    "content": text_to_append
+                                })
+                    elif mime == "application/pdf":
+                        try:
+                            pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+                            pages_text = []
+                            for page in pdf_reader.pages:
+                                page_text = page.extract_text()
+                                if page_text:
+                                    pages_text.append(page_text)
+                            extracted = "\n\n".join(pages_text) if pages_text else "(No extractable text found in PDF)"
+                        except Exception as e:
+                            extracted = f"(Error extracting PDF text: {e})"
+                        
+                        text_to_append = f"\n\n[System Injection] Extracted PDF content:\n{extracted}"
+                        if ollama_messages and ollama_messages[-1]["role"] == "user":
+                            if isinstance(ollama_messages[-1]["content"], str):
+                                ollama_messages[-1]["content"] += text_to_append
+                            elif isinstance(ollama_messages[-1]["content"], list):
+                                ollama_messages[-1]["content"].append({"type": "text", "text": text_to_append})
+                        else:
+                            ollama_messages.append({
+                                "role": "user",
+                                "content": text_to_append
+                            })
+                    elif mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                        try:
+                            doc_stream = io.BytesIO(file_bytes)
+                            doc = docx.Document(doc_stream)
+                            full_text = [para.text for para in doc.paragraphs]
+                            extracted = "\n".join(full_text)
+                        except Exception as e:
+                            extracted = f"(Error extracting DOCX text: {e})"
+                        
+                        text_to_append = f"\n\n[System Injection] Extracted DOCX content:\n{extracted}"
+                        if ollama_messages and ollama_messages[-1]["role"] == "user":
+                            if isinstance(ollama_messages[-1]["content"], str):
+                                ollama_messages[-1]["content"] += text_to_append
+                            elif isinstance(ollama_messages[-1]["content"], list):
+                                ollama_messages[-1]["content"].append({"type": "text", "text": text_to_append})
+                        else:
+                            ollama_messages.append({
+                                "role": "user",
+                                "content": text_to_append
+                            })
+                    else:
+                        text_to_append = f"\n\n[System Injection] Binary file attached ({mime}, {file_bytes} bytes). Cannot display content."
+                        if ollama_messages and ollama_messages[-1]["role"] == "user":
+                            if isinstance(ollama_messages[-1]["content"], str):
+                                ollama_messages[-1]["content"] += text_to_append
+                            elif isinstance(ollama_messages[-1]["content"], list):
+                                ollama_messages[-1]["content"].append({"type": "text", "text": text_to_append})
+                        else:
+                            ollama_messages.append({
+                                "role": "user",
+                                "content": text_to_append
+                            })
 
         return ollama_messages
 
@@ -267,7 +397,7 @@ class ChatRobot():
             file_path = f"{folder_name}/{file_name}" if folder_name else file_name
             # 1. Download Bytes dari Supabase
             file_bytes = self.supabase.storage.from_(self.settings.bucket_name).download(file_path)
-            
+            print(f"   📥 Downloaded file '{file_path}' ({len(file_bytes)} bytes)")
             if not file_bytes: return None
 
             # 2. Deteksi Mime Type
@@ -312,6 +442,69 @@ class ChatRobot():
             print(f"❌ Error downloading file for history: {e}")
             return None
 
+    def download_file_from_url(self, url: str, object_name: str = "unknown") -> types.Content:
+        """
+        Mengunduh file SOP dari URL lokal. Jika PDF/Gambar -> kirim sebagai File Bytes.
+        Jika DOCX -> ekstrak teksnya -> kirim sebagai Teks.
+        URL bersifat lokal dan tidak bisa diakses langsung oleh LLM.
+        """
+        try:
+            import requests as req_lib
+
+            print(f"   📥 Downloading SOP from URL: {url}")
+            resp = req_lib.get(url, timeout=30)
+            resp.raise_for_status()
+            file_bytes = resp.content
+
+            if not file_bytes:
+                print(f"   ⚠️ File empty from URL: {url}")
+                return None
+
+            print(f"   📥 Downloaded SOP for '{object_name}' ({len(file_bytes)} bytes)")
+
+            # Detect mime type from Content-Type header or URL
+            content_type = resp.headers.get("Content-Type", "")
+            if ";" in content_type:
+                content_type = content_type.split(";")[0].strip()
+
+            if not content_type or content_type == "application/octet-stream":
+                # Fallback: guess from URL
+                mime_type, _ = mimetypes.guess_type(url)
+                if mime_type:
+                    content_type = mime_type
+                else:
+                    content_type = "application/octet-stream"
+
+            parts = []
+
+            # DOCX -> extract text
+            if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                try:
+                    doc_stream = io.BytesIO(file_bytes)
+                    doc = docx.Document(doc_stream)
+                    full_text = [para.text for para in doc.paragraphs]
+                    extracted_text = "\n".join(full_text)
+                    parts.append(
+                        types.Part.from_text(text=f"--- SOP Content for '{object_name}' ---\n{extracted_text}")
+                    )
+                except Exception as e:
+                    print(f"   ⚠️ Gagal parsing DOCX dari URL: {e}")
+                    parts.append(types.Part.from_text(text=f"Error reading docx content from URL for '{object_name}'"))
+
+            # PDF, Image, etc -> send as bytes
+            else:
+                parts.append(types.Part.from_bytes(data=file_bytes, mime_type=content_type))
+                parts.append(types.Part.from_text(text=f"[System Injection] SOP file for object '{object_name}'"))
+
+            return types.Content(
+                role='user',
+                parts=parts
+            )
+
+        except Exception as e:
+            print(f"❌ Error downloading SOP from URL '{url}': {e}")
+            return None
+
     def download_image(self, filepath: str) -> types.Content:
         """
         Mengunduh gambar hasil capture dari Supabase Storage dan mengembalikannya
@@ -341,6 +534,105 @@ class ChatRobot():
             print(f"❌ Error downloading captured image: {e}")
             return None
 
+    def _parse_files(self, files: list[str]) -> list[tuple[bytes, str, str]]:
+        """
+        Parses a list of data URLs.
+        Returns a list of tuples: (file_bytes, mime_type, filename)
+        """
+        parsed = []
+        import re
+        for file_data in files:
+            if not file_data:
+                continue
+            # Check if it is a data URL: data:<mime>;base64,<data>
+            match = re.match(r'^data:([^;]+);base64,(.*)$', file_data)
+            if match:
+                mime_type = match.group(1)
+                base64_data = match.group(2)
+                try:
+                    file_bytes = base64.b64decode(base64_data)
+                    ext = mimetypes.guess_extension(mime_type) or '.bin'
+                    filename = f"uploaded_file{ext}"
+                    parsed.append((file_bytes, mime_type, filename))
+                except Exception as e:
+                    print(f"⚠️ Failed to decode base64 file: {e}")
+            else:
+                print(f"⚠️ File data is not a base64 data URL: {file_data[:50]}...")
+        return parsed
+
+    def _build_gemini_user_message(self, user_prompt: str, parsed_files: list[tuple[bytes, str, str]]) -> types.Content:
+        parts = [types.Part.from_text(text=user_prompt)]
+        for file_bytes, mime_type, filename in parsed_files:
+            if mime_type.startswith("image/") or mime_type == "application/pdf":
+                parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+            elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                # DOCX extraction
+                try:
+                    doc_stream = io.BytesIO(file_bytes)
+                    doc = docx.Document(doc_stream)
+                    full_text = [para.text for para in doc.paragraphs]
+                    extracted_text = "\n".join(full_text)
+                    parts.append(types.Part.from_text(text=f"--- Content of {filename} ---\n{extracted_text}"))
+                except Exception as e:
+                    print(f"⚠️ Failed to parse DOCX {filename}: {e}")
+                    parts.append(types.Part.from_text(text=f"Error reading docx content: {filename}"))
+            else:
+                parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+        return types.Content(role='user', parts=parts)
+
+    def _build_openai_user_message(self, user_prompt: str, parsed_files: list[tuple[bytes, str, str]], model_name: str = "") -> dict:
+        content_array = [{"type": "text", "text": user_prompt}]
+        supports_vision = self._model_supports_vision(model_name) if model_name else True
+        for file_bytes, mime_type, filename in parsed_files:
+            b64_data = base64.b64encode(file_bytes).decode("utf-8")
+            if mime_type.startswith("image/"):
+                if supports_vision:
+                    content_array.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{b64_data}"
+                        }
+                    })
+                else:
+                    content_array.append({
+                        "type": "text",
+                        "text": f"\n\n[System Injection] Image attached ({filename}) but vision is not supported by model '{model_name}'."
+                    })
+            elif mime_type == "application/pdf":
+                try:
+                    pdf_reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+                    pages_text = []
+                    for page in pdf_reader.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            pages_text.append(page_text)
+                    extracted = "\n\n".join(pages_text) if pages_text else "(No extractable text found in PDF)"
+                except Exception as e:
+                    extracted = f"(Error extracting PDF text: {e})"
+                content_array.append({
+                    "type": "text",
+                    "text": f"\n\n[System Injection] Extracted PDF content ({filename}):\n{extracted}"
+                })
+            elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                # DOCX extraction for Ollama/OpenAI
+                try:
+                    doc_stream = io.BytesIO(file_bytes)
+                    doc = docx.Document(doc_stream)
+                    full_text = [para.text for para in doc.paragraphs]
+                    extracted = "\n".join(full_text)
+                except Exception as e:
+                    extracted = f"(Error extracting DOCX text: {e})"
+                content_array.append({
+                    "type": "text",
+                    "text": f"\n\n[System Injection] Extracted DOCX content ({filename}):\n{extracted}"
+                })
+            else:
+                content_array.append({
+                    "type": "text",
+                    "text": f"\n\n[System Injection] Binary file attached ({mime_type}, {len(file_bytes)} bytes). Cannot display content."
+                })
+        return {"role": "user", "content": content_array}
+
     # --- MAIN PROCESS ---
 
     @observe()
@@ -350,15 +642,19 @@ class ChatRobot():
         return tools_response
 
     @observe(as_type="generation")
-    async def _call_gemini(self, messages, gemini_tools):
+    async def _call_gemini(self, messages, gemini_tools, index):
         model_name = (self.req.model_name or "gemini-2.5-flash") if self.req else "gemini-2.5-flash"
         # Log input and model before making the call
         self.langfuse_client.update_current_generation(
             input=f"[{len(messages)} messages context]",
-            model=model_name
+            model=model_name,
+            metadata={
+                "tags": self.req.tags + [f"{index}"] if self.req and self.req.tags else [f"{index}"]
+            }
         )
 
         max_retries = 3
+        sys_instruction = self.req.system_instruction if (self.req and hasattr(self.req, 'system_instruction') and self.req.system_instruction) else system_prompt
         for attempt in range(max_retries):
             try:
                 response = self.gemini_client.models.generate_content(
@@ -366,7 +662,7 @@ class ChatRobot():
                     contents=messages,
                     config=types.GenerateContentConfig(
                         tools=gemini_tools,
-                        system_instruction=system_prompt
+                        system_instruction=sys_instruction
                     ),
                 )
                 
@@ -391,7 +687,7 @@ class ChatRobot():
                     raise
 
     @observe(as_type="generation")
-    async def _call_openai_compatible(self, messages: list[dict], tools: list[dict]) -> dict:
+    async def _call_openai_compatible(self, messages: list[dict], tools: list[dict], index) -> dict:
         """
         Call an OpenAI-compatible endpoint (Ollama or OpenAI GPT).
         Automatically routes to the correct URL and auth based on model name.
@@ -409,9 +705,7 @@ class ChatRobot():
             input=f"[{len(messages)} messages context]",
             model=model_name,
             metadata={
-                "pengujian_tag": "Uji-Analisis-Gambar", 
-                "kategori_kondisi": "Miring",
-                "jarak_objek": "Jauh"
+                "tags": self.req.tags + [f"{index}"] if self.req and self.req.tags else [f"{index}"]
             }
         )
 
@@ -430,7 +724,7 @@ class ChatRobot():
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=120.0) as http_client:
+                async with httpx.AsyncClient(timeout=180.0) as http_client:
                     resp = await http_client.post(url, json=payload, headers=headers)
                     resp.raise_for_status()
                     result = resp.json()
@@ -485,12 +779,19 @@ class ChatRobot():
                     is_async_running = True
                     print(f"   ⏳ Tool '{tool_name}' is async (status=running). Will break loop.")
                 
-                if msg_type == "file_retrieve" and status == "success":
-                    print("   📄 File detected. Downloading for current context...")
-                    data = parsed_output.get("data", {})
-                    folder = data.get("folder", "sop")
-                    filename = data.get("filename")
-                    runtime_file_injection = self.download_file(filename, folder)
+                if msg_type == "sop_query" and status == "success":
+                    print("   📄 SOP detected. Downloading from URL for current context...")
+                    data = parsed_output.get("data", [])
+                    injection_parts = []
+                    for obj in data:
+                        sop_url = obj.get("sop_url")
+                        obj_name = obj.get("name", "unknown")
+                        if sop_url:
+                            file_content = self.download_file_from_url(sop_url, obj_name)
+                            if file_content:
+                                injection_parts.extend(file_content.parts)
+                    if injection_parts:
+                        runtime_file_injection = types.Content(role='user', parts=injection_parts)
 
                 # elif msg_type == "image_capture" and status == "success":
                 #     print("   📸 Image captured. Downloading for current context...")
@@ -541,8 +842,9 @@ class ChatRobot():
             print(f"📜 Loading history for session: {session_id}")
             messages = self.get_history(session_id)
 
-        with propagate_attributes(session_id=str(session_id)):
-            user_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
+        with propagate_attributes(session_id=str(session_id), tags=self.req.tags if self.req.tags else None):
+            parsed_files = self._parse_files(self.req.files) if self.req.files else []
+            user_msg = self._build_gemini_user_message(self.req.user_prompt, parsed_files)
             messages.append(user_msg)
             self.save_message(session_id, user_msg)
 
@@ -575,8 +877,10 @@ class ChatRobot():
                 mcp_tools_raw = await self._fetch_mcp_tools(client)
                 gemini_tools = convert_mcp_tools_to_gemini(mcp_tools_raw)
 
+                index = 0
                 while True:
-                    response = await self._call_gemini(messages, gemini_tools)
+                    response = await self._call_gemini(messages, gemini_tools, index)
+                    index += 1
                     candidate = response.candidates[0]
                     
                     # Guard: Gemini may return None parts (safety block, empty response)
@@ -683,20 +987,22 @@ class ChatRobot():
             print(f"📜 Loading history for session ({provider}): {session_id}")
             openai_messages = self.get_history_for_ollama(session_id)
 
-        with propagate_attributes(session_id=str(session_id)):
+        with propagate_attributes(session_id=str(session_id), tags=self.req.tags if self.req.tags else None):
             # Add system prompt as first message (OpenAI format)
             # Insert at position 0 so it's always first
+            sys_instruction = self.req.system_instruction if (self.req and hasattr(self.req, 'system_instruction') and self.req.system_instruction) else system_prompt
             openai_messages.insert(0, {
                 "role": "system",
-                "content": system_prompt
+                "content": sys_instruction
             })
 
-            # Add user message
-            user_openai_msg = {"role": "user", "content": self.req.user_prompt}
+            # Add user message with files
+            parsed_files = self._parse_files(self.req.files) if self.req.files else []
+            user_openai_msg = self._build_openai_user_message(self.req.user_prompt, parsed_files)
             openai_messages.append(user_openai_msg)
 
             # Save user message to DB in Gemini format
-            user_gemini_msg = types.Content(role='user', parts=[types.Part.from_text(text=self.req.user_prompt)])
+            user_gemini_msg = self._build_gemini_user_message(self.req.user_prompt, parsed_files)
             self.save_message(session_id, user_gemini_msg)
 
             # Inject robot status if provided (as assistant + tool message pair)
@@ -745,9 +1051,10 @@ class ChatRobot():
                 mcp_tools_raw = await self._fetch_mcp_tools(client)
                 openai_tools = convert_mcp_tools_to_ollama(mcp_tools_raw)
 
+                index = 0
                 while True:
-                    response = await self._call_openai_compatible(openai_messages, openai_tools)
-
+                    response = await self._call_openai_compatible(openai_messages, openai_tools, index)
+                    index += 1
                     choice = response.get("choices", [{}])[0]
                     message = choice.get("message", {})
                     finish_reason = choice.get("finish_reason", "")
@@ -825,18 +1132,72 @@ class ChatRobot():
                             gemini_tool_msg = self._build_gemini_tool_msg(tool_name, response_payload)
                             self.save_message(session_id, gemini_tool_msg, showed=False)
 
-                            # File injection: inject as text description
-                            # (OpenAI-compatible API doesn't support raw file bytes like Gemini)
+                            # File injection: handle both text and binary (inline_data) parts
                             if runtime_file_injection:
                                 print(f"   📎 Injecting file content to {provider} context (Runtime)...")
-                                # Extract text parts from the Gemini file injection
-                                file_texts = [p.text for p in runtime_file_injection.parts if p.text]
-                                if file_texts:
-                                    file_injection_openai = {
-                                        "role": "user",
-                                        "content": "\n".join(file_texts)
-                                    }
-                                    openai_messages.append(file_injection_openai)
+                                content_array = []
+
+                                for p in runtime_file_injection.parts:
+                                    if p.text:
+                                        content_array.append({"type": "text", "text": p.text})
+                                    elif p.inline_data and p.inline_data.data:
+                                        b64_data = base64.b64encode(p.inline_data.data).decode("utf-8")
+                                        mime = p.inline_data.mime_type or "application/octet-stream"
+
+                                        if mime.startswith("image/"):
+                                            # image_url supported by both GPT and Ollama
+                                            content_array.append({
+                                                "type": "image_url",
+                                                "image_url": {
+                                                    "url": f"data:{mime};base64,{b64_data}"
+                                                }
+                                            })
+                                        elif model_name in OPENAI_MODELS:
+                                            # type:file only supported by OpenAI GPT
+                                            content_array.append({
+                                                "type": "file",
+                                                "file": {
+                                                    "filename": "uploaded_document",
+                                                    "file_data": f"data:{mime};base64,{b64_data}"
+                                                }
+                                            })
+                                        else:
+                                            # Ollama: no file support, extract text from PDF/DOCX
+                                            if mime == "application/pdf":
+                                                try:
+                                                    pdf_reader = pypdf.PdfReader(io.BytesIO(p.inline_data.data))
+                                                    pages_text = []
+                                                    for page in pdf_reader.pages:
+                                                        page_text = page.extract_text()
+                                                        if page_text:
+                                                            pages_text.append(page_text)
+                                                    extracted = "\n\n".join(pages_text) if pages_text else "(No extractable text found in PDF)"
+                                                except Exception as e:
+                                                    extracted = f"(Error extracting PDF text: {e})"
+                                                content_array.append({
+                                                    "type": "text",
+                                                    "text": f"[System Injection] Extracted PDF content:\n{extracted}"
+                                                })
+                                            elif mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                                                try:
+                                                    doc_stream = io.BytesIO(p.inline_data.data)
+                                                    doc = docx.Document(doc_stream)
+                                                    full_text = [para.text for para in doc.paragraphs]
+                                                    extracted = "\n".join(full_text)
+                                                except Exception as e:
+                                                    extracted = f"(Error extracting DOCX text: {e})"
+                                                content_array.append({
+                                                    "type": "text",
+                                                    "text": f"[System Injection] Extracted DOCX content:\n{extracted}"
+                                                })
+                                            else:
+                                                content_array.append({
+                                                    "type": "text",
+                                                    "text": f"[System Injection] Binary file attached ({mime}, {len(p.inline_data.data)} bytes). Cannot display content."
+                                                })
+
+                                if content_array:
+                                    openai_messages.append({"role": "user", "content": content_array})
 
                             if is_async_running:
                                 hit_async_running = True
