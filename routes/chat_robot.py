@@ -220,12 +220,12 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                         audio_data = msg_received["bytes"]
                         # Forward to Gemini Live Session
                         await session.send(
-                            input={
-                                "audio": {
-                                    "data": audio_data,
-                                    "mime_type": "audio/pcm;rate=16000"
-                                }
-                            }
+                            input=types.LiveClientRealtimeInput(
+                                audio=types.Blob(
+                                    data=audio_data,
+                                    mime_type="audio/pcm;rate=16000"
+                                )
+                            )
                         )
                     elif "text" in msg_received and msg_received["text"]:
                         data = json.loads(msg_received["text"])
