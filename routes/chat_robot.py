@@ -149,15 +149,20 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
             # Define the task to receive messages from Gemini and send them to the frontend
             async def receive_from_gemini():
                 try:
+                    logging.info("Gemini Live receiver task started")
                     async for message in session.receive():
+                        # Log when any message is received from Gemini
+                        logging.info(f"WebSocket RX from Gemini: setup_complete={message.setup_complete is not None}, server_content={message.server_content is not None}")
+                        
                         # Check input_transcription
                         if message.server_content:
                             server_content = message.server_content
+                            logging.info(f"Server content: turn_complete={getattr(server_content, 'turn_complete', False)}, interrupted={getattr(server_content, 'interrupted', False)}, input_transcription={server_content.input_transcription is not None}, model_turn={server_content.model_turn is not None}")
                             
                             if server_content.input_transcription:
                                 text = server_content.input_transcription.text
                                 if text:
-                                    logging.info(f"Gemini STT (User): {text}")
+                                    logging.info(f"Gemini STT (User transcription): '{text}'")
                                     state.user_text += " " + text
                                     await websocket.send_json({"type": "user_transcription", "text": text})
 
@@ -177,10 +182,12 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                                 for part in server_content.model_turn.parts:
                                     # Text part
                                     if part.text:
+                                        logging.info(f"Gemini response text: '{part.text}'")
                                         state.assistant_text += part.text
                                         await websocket.send_json({"type": "assistant_text", "text": part.text})
                                     # Audio / Inline Data part
                                     elif part.inline_data:
+                                        logging.info(f"Gemini response audio chunk: {len(part.inline_data.data)} bytes, mimeType: {part.inline_data.mime_type}")
                                         # Base64 encode the binary audio PCM data to send to frontend
                                         audio_b64 = base64.b64encode(part.inline_data.data).decode("utf-8")
                                         await websocket.send_json({
@@ -198,7 +205,7 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                                 state.assistant_text = ""
 
                 except asyncio.CancelledError:
-                    pass
+                    logging.info("Gemini Live receiver task cancelled")
                 except Exception as gemini_rx_err:
                     logging.error(f"Error receiving from Gemini: {gemini_rx_err}")
                     try:
@@ -218,6 +225,8 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                     if "bytes" in msg_received and msg_received["bytes"]:
                         # Raw binary audio chunk (16kHz, 16-bit, little-endian mono PCM)
                         audio_data = msg_received["bytes"]
+                        logging.info(f"WebSocket RX from Frontend: {len(audio_data)} bytes of binary audio data")
+                        
                         # Forward to Gemini Live Session
                         await session.send(
                             input=types.LiveClientRealtimeInput(
@@ -227,6 +236,7 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                                 )
                             )
                         )
+                        # Optional: log successful send to verify it didn't block or error
                     elif "text" in msg_received and msg_received["text"]:
                         data = json.loads(msg_received["text"])
                         msg_type = data.get("type")
