@@ -221,8 +221,10 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                         # Forward to Gemini Live Session
                         await session.send(
                             input={
-                                "data": audio_data,
-                                "mime_type": "audio/pcm;rate=16000"
+                                "audio": {
+                                    "data": audio_data,
+                                    "mime_type": "audio/pcm;rate=16000"
+                                }
                             }
                         )
                     elif "text" in msg_received and msg_received["text"]:
