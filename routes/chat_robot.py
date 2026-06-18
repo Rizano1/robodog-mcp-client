@@ -87,7 +87,8 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                     voice_name="Kore"  # kore is a friendly female voice config
                 )
             )
-        )
+        ),
+        input_audio_transcription=types.AudioTranscriptionConfig()
     )
 
     # State for accumulating the conversation turn text to save in DB history
@@ -99,17 +100,17 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
 
     state = TurnState()
 
-    def save_turn_to_db():
+    def save_turn_to_db(user_prompt: str, bot_response: str):
         if not db_session_id:
             return
         
-        user_prompt = state.user_text.strip()
-        bot_response = state.assistant_text.strip()
+        user_prompt = user_prompt.strip()
+        bot_response = bot_response.strip()
         
         if not user_prompt and not bot_response:
             return
             
-        logging.info(f"Saving live turn to DB. User: '{user_prompt}', Bot: '{bot_response}'")
+        logging.info(f"Saving live turn to DB (background). User: '{user_prompt}', Bot: '{bot_response}'")
         
         try:
             # 1. Save User Message
@@ -134,7 +135,6 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                 user_prompt=user_prompt or "[Voice Input]",
                 bot_answer=bot_response
             )
-            state.is_first_turn = False
         except Exception as db_err:
             logging.error(f"Error saving live turn to DB: {db_err}")
 
@@ -150,59 +150,82 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
             async def receive_from_gemini():
                 try:
                     logging.info("Gemini Live receiver task started")
-                    async for message in session.receive():
-                        # Log when any message is received from Gemini
-                        logging.info(f"WebSocket RX from Gemini: setup_complete={message.setup_complete is not None}, server_content={message.server_content is not None}")
-                        
-                        # Check input_transcription
-                        if message.server_content:
-                            server_content = message.server_content
-                            logging.info(f"Server content: turn_complete={getattr(server_content, 'turn_complete', False)}, interrupted={getattr(server_content, 'interrupted', False)}, input_transcription={server_content.input_transcription is not None}, model_turn={server_content.model_turn is not None}")
+                    while True:
+                        has_messages = False
+                        async for message in session.receive():
+                            has_messages = True
+                            # Log when any message is received from Gemini
+                            logging.info(f"WebSocket RX from Gemini: setup_complete={message.setup_complete is not None}, server_content={message.server_content is not None}")
                             
-                            if server_content.input_transcription:
-                                text = server_content.input_transcription.text
-                                if text:
-                                    logging.info(f"Gemini STT (User transcription): '{text}'")
-                                    state.user_text += " " + text
-                                    await websocket.send_json({"type": "user_transcription", "text": text})
+                            # Check input_transcription
+                            if message.server_content:
+                                server_content = message.server_content
+                                logging.info(f"Server content: turn_complete={getattr(server_content, 'turn_complete', False)}, interrupted={getattr(server_content, 'interrupted', False)}, input_transcription={server_content.input_transcription is not None}, model_turn={server_content.model_turn is not None}")
+                                
+                                if server_content.input_transcription:
+                                    text = server_content.input_transcription.text
+                                    if text:
+                                        logging.info(f"Gemini STT (User transcription): '{text}'")
+                                        state.user_text += " " + text
+                                        await websocket.send_json({"type": "user_transcription", "text": text})
 
-                            # Check for interruption
-                            if getattr(server_content, 'interrupted', False):
-                                logging.info("Gemini live stream interrupted")
-                                state.assistant_text += " [Terpotong]"
-                                await websocket.send_json({"type": "interrupted"})
-                                # Save partial conversation turn
-                                save_turn_to_db()
-                                state.user_text = ""
-                                state.assistant_text = ""
-                                continue
-                            
-                            # Check model turn parts
-                            if server_content.model_turn:
-                                for part in server_content.model_turn.parts:
-                                    # Text part
-                                    if part.text:
-                                        logging.info(f"Gemini response text: '{part.text}'")
-                                        state.assistant_text += part.text
-                                        await websocket.send_json({"type": "assistant_text", "text": part.text})
-                                    # Audio / Inline Data part
-                                    elif part.inline_data:
-                                        logging.info(f"Gemini response audio chunk: {len(part.inline_data.data)} bytes, mimeType: {part.inline_data.mime_type}")
-                                        # Base64 encode the binary audio PCM data to send to frontend
-                                        audio_b64 = base64.b64encode(part.inline_data.data).decode("utf-8")
-                                        await websocket.send_json({
-                                            "type": "assistant_audio",
-                                            "data": audio_b64,
-                                            "mimeType": part.inline_data.mime_type
-                                        })
-                            
-                            # Check turn_complete
-                            if getattr(server_content, 'turn_complete', False):
-                                logging.info("Gemini live turn complete")
-                                await websocket.send_json({"type": "turn_complete"})
-                                save_turn_to_db()
-                                state.user_text = ""
-                                state.assistant_text = ""
+                                # Check for interruption
+                                if getattr(server_content, 'interrupted', False):
+                                    logging.info("Gemini live stream interrupted")
+                                    state.assistant_text += " [Terpotong]"
+                                    await websocket.send_json({"type": "interrupted"})
+                                    # Save partial conversation turn in background
+                                    asyncio.create_task(asyncio.to_thread(
+                                        save_turn_to_db,
+                                        state.user_text,
+                                        state.assistant_text
+                                    ))
+                                    state.user_text = ""
+                                    state.assistant_text = ""
+                                    continue
+                                
+                                # Check output_transcription (Bot's text response transcript)
+                                if server_content.output_transcription:
+                                    text = server_content.output_transcription.text
+                                    if text:
+                                        logging.info(f"Gemini response transcript: '{text}'")
+                                        state.assistant_text += text
+                                        await websocket.send_json({"type": "assistant_text", "text": text})
+                                
+                                # Check model turn parts
+                                if server_content.model_turn:
+                                    for part in server_content.model_turn.parts:
+                                        # Text part (fallback/redundancy)
+                                        if part.text:
+                                            logging.info(f"Gemini response text: '{part.text}'")
+                                            state.assistant_text += part.text
+                                            await websocket.send_json({"type": "assistant_text", "text": part.text})
+                                        # Audio / Inline Data part
+                                        elif part.inline_data:
+                                            logging.info(f"Gemini response audio chunk: {len(part.inline_data.data)} bytes, mimeType: {part.inline_data.mime_type}")
+                                            # Base64 encode the binary audio PCM data to send to frontend
+                                            audio_b64 = base64.b64encode(part.inline_data.data).decode("utf-8")
+                                            await websocket.send_json({
+                                                "type": "assistant_audio",
+                                                "data": audio_b64,
+                                                "mimeType": part.inline_data.mime_type
+                                            })
+                                
+                                # Check turn_complete
+                                if getattr(server_content, 'turn_complete', False):
+                                    logging.info("Gemini live turn complete")
+                                    await websocket.send_json({"type": "turn_complete"})
+                                    asyncio.create_task(asyncio.to_thread(
+                                        save_turn_to_db,
+                                        state.user_text,
+                                        state.assistant_text
+                                    ))
+                                    state.user_text = ""
+                                    state.assistant_text = ""
+                        
+                        if not has_messages:
+                            logging.info("Gemini Live session closed (no more messages)")
+                            break
 
                 except asyncio.CancelledError:
                     logging.info("Gemini Live receiver task cancelled")
@@ -225,18 +248,16 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                     if "bytes" in msg_received and msg_received["bytes"]:
                         # Raw binary audio chunk (16kHz, 16-bit, little-endian mono PCM)
                         audio_data = msg_received["bytes"]
+
                         logging.info(f"WebSocket RX from Frontend: {len(audio_data)} bytes of binary audio data")
-                        
+
                         # Forward to Gemini Live Session
-                        await session.send(
-                            input=types.LiveClientRealtimeInput(
-                                audio=types.Blob(
-                                    data=audio_data,
-                                    mime_type="audio/pcm;rate=16000"
-                                )
+                        await session.send_realtime_input(
+                            audio=types.Blob(
+                                data=audio_data,
+                                mime_type="audio/pcm;rate=16000"
                             )
                         )
-                        # Optional: log successful send to verify it didn't block or error
                     elif "text" in msg_received and msg_received["text"]:
                         data = json.loads(msg_received["text"])
                         msg_type = data.get("type")
@@ -246,7 +267,13 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                             logging.info(f"Frontend text input: {user_text}")
                             state.user_text = user_text
                             # Send text to Gemini Live Session
-                            await session.send(input={"text": user_text}, end_of_turn=True)
+                            await session.send_client_content(
+                                turns=types.Content(
+                                    role="user",
+                                    parts=[types.Part.from_text(text=user_text)]
+                                ),
+                                turn_complete=True
+                            )
                         elif msg_type == "ping":
                             await websocket.send_json({"type": "pong"})
             except WebSocketDisconnect:
@@ -257,7 +284,11 @@ async def websocket_live_gemini(websocket: WebSocket, session_id: Optional[int] 
                 await rx_task
                 
                 # Save any remaining text from the current active turn before closing
-                save_turn_to_db()
+                await asyncio.to_thread(
+                    save_turn_to_db,
+                    state.user_text,
+                    state.assistant_text
+                )
 
     except Exception as e:
         logging.error(f"Error in WebSocket Live Session: {e}")
