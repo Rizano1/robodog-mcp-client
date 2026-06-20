@@ -45,6 +45,8 @@ ALUR KERJA UTAMA
      - Jelaskan aksi utama yang akan dilakukan.
      - Minta persetujuan user sebelum eksekusi.
 
+- buat rencana inspeksi dalam sekali instruksi
+- tidak perlu meminta persetujuan dalam langkah-langkah pembuatan plan.
 - Jangan menjalankan plan sebelum user menyetujui.
 
 ========================
