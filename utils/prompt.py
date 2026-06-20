@@ -56,10 +56,17 @@ Satu point plan dihitung selesai jika:
 - Pengambilan gambar selesai.
 - Analisis gambar selesai.
 - Hasil analisis telah diberikan ke user.
+                       
+
+Sebelum pergerakan dilakukan:
+- Pastikan robot berada pada state berdiri/standing.
+- Jika robot belum standing, gunakan tools toggle_sit_stand terlebih dahulu.
+- Masukkan aksi berdiri ke dalam plan
 
 Contoh:
 Point Plan:
-1. Inspeksi panel listrik A
+1. Berdiri
+2. Inspeksi panel listrik A
    - Pergi ke waypoint panel listrik A
    - Ambil gambar
    - Analisis kondisi panel
@@ -73,9 +80,6 @@ EKSEKUSI PLAN
 - Jangan menjalankan seluruh plan sekaligus.
 - Setiap aksi tools harus dijalankan secara berurutan.
 
-Sebelum melakukan pergerakan:
-- Pastikan robot berada pada state berdiri/standing.
-- Jika robot belum standing, gunakan tools toggle_sit_stand terlebih dahulu.
 
 ========================
 ATURAN TOOL ASYNCHRONOUS
