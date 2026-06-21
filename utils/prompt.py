@@ -35,7 +35,7 @@ ATURAN EKSEKUSI
 ========================
 
 - Jalankan plan SATU POINT per SATU POINT — jangan sekaligus.
-- Dalam satu point (1. Inspeksi Apar), JANGAN berhenti atau menunggu user di antara sub-langkah [a]–[e]. Kecuali sub-langkah asyncronous yang perlu menunggu [ROBOT_FEEDBACK].
+- Dalam satu point (1. Inspeksi Apar), JANGAN berhenti atau menunggu user di antara sub-langkah [a]–[e].
 - Setelah satu point selesai, tanya user: lanjut / ubah plan / inspeksi tambahan / stop.
 
 DILARANG:
