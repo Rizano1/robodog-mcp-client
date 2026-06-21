@@ -137,13 +137,16 @@ class ChatRobot():
         """
         serialized_parts = []
         for part in content.parts:
+            # Skip thinking/reasoning parts (internal chain-of-thought dari Gemini 2.5)
+            if getattr(part, 'thought', False):
+                continue
             if part.text:
                 serialized_parts.append({"text": part.text})
             elif part.function_call:
                 serialized_parts.append({
                     "function_call": {
                         "name": part.function_call.name,
-                        "args": dict(part.function_call.args)
+                        "args": dict(part.function_call.args) if part.function_call.args else {}
                     }
                 })
             elif part.function_response:
@@ -161,6 +164,12 @@ class ChatRobot():
                         "data": b64_data
                     }
                 })
+
+        # Safeguard: Jika serialized_parts kosong (karena safety block, empty/whitespace text, atau thought-only parts),
+        # tambahkan fallback text agar history tidak kosong [] di database
+        if not serialized_parts:
+            fallback_text = "[Empty Response]" if content.role == "model" else "[Empty Message]"
+            serialized_parts.append({"text": fallback_text})
 
         self.supabase.table("chat-messages").insert({
             "session_id": session_id,
@@ -201,6 +210,11 @@ class ChatRobot():
                     id_data = item["inline_data"]
                     file_bytes = base64.b64decode(id_data["data"])
                     parts.append(types.Part.from_bytes(data=file_bytes, mime_type=id_data["mime_type"]))
+
+            # Safeguard: Jika database content kosong [], buat fallback part agar tidak error di Gemini API
+            if not parts:
+                fallback_text = "[Empty Response]" if role == "model" else "[Empty Message]"
+                parts.append(types.Part.from_text(text=fallback_text))
 
             gemini_messages.append(types.Content(role=role, parts=parts))
 
@@ -882,6 +896,12 @@ class ChatRobot():
                     response = await self._call_gemini(messages, gemini_tools, index)
                     index += 1
                     candidate = response.candidates[0]
+
+                    # Log finish_reason non-standard untuk debugging
+                    if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                        fr_str = str(candidate.finish_reason)
+                        if 'STOP' not in fr_str:
+                            print(f"   ⚠️ Gemini finish_reason: {candidate.finish_reason}")
                     
                     # Guard: Gemini may return None parts (safety block, empty response)
                     if not candidate.content or not candidate.content.parts:
@@ -890,6 +910,21 @@ class ChatRobot():
                         messages.append(types.Content(
                             role='user',
                             parts=[types.Part.from_text(text="[System] Your previous response was empty. Please try again.")]
+                        ))
+                        continue
+
+                    # Guard: Gemini 2.5 thinking model bisa mengirim response yang hanya berisi
+                    # thinking parts (thought=True) tanpa visible text atau function calls.
+                    # Jika ini terjadi, retry agar Gemini menghasilkan jawaban visible.
+                    has_visible_content = any(
+                        (p.text and not getattr(p, 'thought', False)) or p.function_call
+                        for p in candidate.content.parts
+                    )
+                    if not has_visible_content:
+                        print(f"   ⚠️ Gemini returned thinking-only response (no visible text/function_call). Retrying...")
+                        messages.append(types.Content(
+                            role='user',
+                            parts=[types.Part.from_text(text="[System] Your previous response contained only internal reasoning. Please provide your visible response.")]
                         ))
                         continue
 
