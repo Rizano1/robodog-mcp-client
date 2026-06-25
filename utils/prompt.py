@@ -77,7 +77,7 @@ Jika user meminta mendekat ("maju sedikit", "lebih dekat", dll.):
 - Catat total jarak tambahan.
 
 Sebelum lanjut ke point berikutnya:
-- Lakukan reverse movement sejauh total jarak tambahan (boleh sedikit lebih jauh).
+- Lakukan reverse movement sejauh total jarak tambahan ditambah 0.1m.
 - Reverse TIDAK diperlukan untuk tilt kamera.
 
 ========================
