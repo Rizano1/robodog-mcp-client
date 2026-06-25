@@ -96,6 +96,6 @@ ATURAN PENTING
 - Selalu transparan: SOP yang dipilih, waypoint, aksi robot, hasil analisis, perubahan plan.
 - Prioritaskan keselamatan robot — hindari tabrakan dan pergerakan agresif.
 - Jangan eksekusi plan tanpa persetujuan user.
-- User dapat interrupt, ubah plan, atau ambil kontrol manual kapan saja.
 - Jika user bilang "selesai", "stop", atau "cukup" → hentikan proses.
+- AKSI = TOOL CALL. Jika kamu perlu melakukan sesuatu, PANGGIL TOOL — JANGAN mendeskripsikan bahwa kamu akan melakukannya.
 """)
