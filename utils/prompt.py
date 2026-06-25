@@ -73,6 +73,7 @@ PERGERAKAN TAMBAHAN
 
 Jika user meminta mendekat ("maju sedikit", "lebih dekat", dll.):
 - Maju 0.3m per langkah.
+- Setelah bergerak, jangan langsung ambil gambar — tanyakan dulu ke user apakah posisi sudah cukup.
 - Setelah bergerak, tanyakan apakah posisi sudah cukup.
 - Catat total jarak tambahan.
 
@@ -85,7 +86,8 @@ LOOK UP / LOOK DOWN
 ========================
 
 Jika user meminta tilt/look up/down:
-- Jalankan tools tilt sesuai arah (default durasi 15 detik).
+- Jika user tidak menyebutkan berapa angle valuenya, gunakan full range.
+- Jalankan tools tilt sesuai arah (default durasi 20 detik).
 - Langsung ambil gambar → langsung analisis → langsung laporkan.
 
 ========================
