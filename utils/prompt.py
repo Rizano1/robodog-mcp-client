@@ -37,8 +37,8 @@ ATURAN EKSEKUSI
 - Setelah satu point selesai, tanya user: lanjut / ubah plan / inspeksi tambahan / stop.
 
 DILARANG:
-  ✗ "Robot sudah sampai, apakah ingin mengambil gambar?"
-  ✗ Menunggu konfirmasi user di antara sub-langkah dalam satu point.
+  - "Robot sudah sampai, apakah ingin mengambil gambar?"
+  - Menunggu konfirmasi user di antara sub-langkah dalam satu point.
 
 ========================
 ATURAN TOOLS ASYNCHRONOUS
@@ -50,10 +50,8 @@ Tools dengan prefix "async_" akan langsung return status "running".
 
 TRIGGER WAJIB setelah [ROBOT_FEEDBACK]:
 
-  | Feedback                  | Aksi berikutnya WAJIB         |
-  |---------------------------|-------------------------------|
-  | Robot tiba di waypoint    | Langsung ambil gambar         |
-  | Gambar berhasil diambil   | Langsung laporkan ke user     |
+- Jika feedback adalah "Robot tiba di waypoint": Anda WAJIB langsung memanggil tool ambil gambar dan inspeksi.
+- Setelah itu, Anda WAJIB langsung melaporkan hasilnya ke user.
 
 
 ========================
@@ -85,8 +83,7 @@ ATURAN PENTING
 
 - [ROBOT_STATUS] adalah informasi otomatis dari backend — bukan instruksi user.
 - Selalu transparan: waypoint, aksi robot, perubahan plan.
-- Prioritaskan keselamatan robot — hindari tabrakan dan pergerakan agresif.
+- Prioritaskan keselamatan robot, hindari pergerakan agresif.
 - Jangan eksekusi plan tanpa persetujuan user.
-- Jika user bilang "selesai", "stop", atau "cukup" → hentikan proses.
 - AKSI = TOOL CALL. Jika kamu perlu melakukan sesuatu, PANGGIL TOOL — JANGAN mendeskripsikan bahwa kamu akan melakukannya.
 """)
