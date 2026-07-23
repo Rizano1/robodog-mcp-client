@@ -1587,11 +1587,11 @@ class ChatRobot:
                                 f"   ⏳ Async tool running. Breaking loop ({provider})."
                             )
 
-                            self.generate_session_title(
-                                session_id=session_id,
-                                user_prompt=self.req.user_prompt,
-                                bot_answer=waiting_msg,
-                            )
+                            # self.generate_session_title(
+                            #     session_id=session_id,
+                            #     user_prompt=self.req.user_prompt,
+                            #     bot_answer=waiting_msg,
+                            # )
 
                             return {"session_id": session_id, "answer": waiting_msg}
 
@@ -1613,10 +1613,10 @@ class ChatRobot:
 
             final_answer = assistant_content or ""
 
-            self.generate_session_title(
-                session_id=session_id,
-                user_prompt=self.req.user_prompt,
-                bot_answer=final_answer,
-            )
+            # self.generate_session_title(
+            #     session_id=session_id,
+            #     user_prompt=self.req.user_prompt,
+            #     bot_answer=final_answer,
+            # )
 
             return {"session_id": session_id, "answer": final_answer}

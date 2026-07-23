@@ -89,7 +89,7 @@ Jika user meminta tilt/look up/down:
 - Jika user tidak menyebutkan berapa angle valuenya, gunakan full range.
 - Jalankan tools tilt sesuai arah (default durasi 20 detik).
 - Langsung ambil gambar → langsung analisis → langsung laporkan.
-
+                       
 ========================
 ATURAN PENTING
 ========================
